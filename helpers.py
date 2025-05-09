@@ -3,6 +3,7 @@ import httpx
 from datetime import datetime
 from pydantic_settings import BaseSettings
 
+
 class Settings(BaseSettings):
     NOTION_TOKEN: str
     NOTION_DB_ID: str
@@ -15,31 +16,44 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
 
+
 settings = Settings()
 
+
+# ───────────── Helpers de formatação ─────────────
+def limpar_telefone(numero: str) -> str:
+    """Mantém apenas DDD + celular (11 últimos dígitos)."""
+    return re.sub(r"\D", "", numero)[-11:]
+
+
 def formatar_data(data: str) -> str:
+    """Converte dd/mm/yyyy → YYYY-MM-DD (ou string vazia se falhar)."""
     try:
         return datetime.strptime(data.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
-    except:
+    except Exception:
         return ""
 
+
+# ───────────── Notion ─────────────
 def get_headers_notion():
     return {
         "Authorization": f"Bearer {settings.NOTION_TOKEN}",
         "Notion-Version": "2022-06-28",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
+
 
 async def notion_search_by_email(email: str):
     async with httpx.AsyncClient(timeout=10) as client:
         payload = {"filter": {"property": "Email", "email": {"equals": email}}}
-        resp = await client.post(
+        r = await client.post(
             f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID}/query",
             headers=get_headers_notion(),
-            json=payload
+            json=payload,
         )
-        resp.raise_for_status()
-        return resp.json()["results"]
+        r.raise_for_status()
+        return r.json()["results"]
+
 
 async def notion_create_page(data: dict):
     payload = {
@@ -52,16 +66,24 @@ async def notion_create_page(data: dict):
             "Tipo do pacote": {"select": {"name": data["pacote"]}},
             "Data início": {"date": {"start": data["inicio"]}},
             "Data fim": {"date": {"start": data["fim"]}},
-        }
+        },
     }
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post("https://api.notion.com/v1/pages", headers=get_headers_notion(), json=payload)
-        resp.raise_for_status()
+        r = await client.post(
+            "https://api.notion.com/v1/pages",
+            headers=get_headers_notion(),
+            json=payload,
+        )
+        if r.status_code != 200:
+            print("❌ Notion payload rejeitado:", r.text)  # <- mostra o detalhe
+        r.raise_for_status()
 
+
+# ───────────── Z-API / WhatsApp ─────────────
 async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
-    numero = re.sub(r"\D", "", phone)
+    numero = limpar_telefone(phone)
     if len(numero) != 11:
-        print(f"⚠️ Telefone inválido: {numero}")
+        print(f"⚠️ Telefone ainda inválido após limpeza: {numero}")
         return
 
     msg = (
@@ -75,12 +97,12 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
         "Se precisar de algo, pode contar com a gente! Rumo à fluência!"
     )
 
-    payload = {
-        "phone": numero,
-        "message": msg
-    }
+    payload = {"phone": numero, "message": msg}
+    url = (
+        f"https://api.z-api.io/instances/{settings.ZAPI_INSTANCE_ID}"
+        f"/token/{settings.ZAPI_TOKEN}/send-message"
+    )
 
-    url = f"https://api.z-api.io/instances/{settings.ZAPI_INSTANCE_ID}/token/{settings.ZAPI_TOKEN}/send-message"
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(url, json=payload)
         if r.status_code == 200:
@@ -88,42 +110,53 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
         else:
             print("❌ Falha ao enviar mensagem:", r.text)
 
+
+# ───────────── Asaas ─────────────
 async def criar_assinatura_asaas(data: dict):
     headers = {
         "Content-Type": "application/json",
-        "access-token": settings.ASAAS_API_KEY
+        "access-token": settings.ASAAS_API_KEY,
     }
 
     customer_payload = {
         "name": data["nome"],
         "email": data["email"],
-        "mobilePhone": re.sub(r"\D", "", data["telefone"]),
-        "cpfCnpj": re.sub(r"\D", "", data["cpf"])
+        "mobilePhone": limpar_telefone(data["telefone"]),
+        "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(f"{settings.ASAAS_BASE}/customers", json=customer_payload, headers=headers)
+        # 1) Cria (ou tenta criar) o cliente
+        r = await client.post(
+            f"{settings.ASAAS_BASE}/customers", json=customer_payload, headers=headers
+        )
         if r.status_code != 200:
             print("Erro ao criar cliente:", r.text)
             r.raise_for_status()
         customer_id = r.json()["id"]
 
+        # 2) Cria assinatura
         assinatura_payload = {
             "customer": customer_id,
             "billingType": "BOLETO",
             "cycle": "MONTHLY",
-            "value": float(data["valor"].replace("R$", "").replace(",", ".").strip()),
+            "value": float(
+                data["valor"].replace("R$", "").replace(",", ".").strip() or 0
+            ),
             "description": "Aulas de Inglês",
             "nextDueDate": formatar_data(data["vencimento"]),
             "endDate": formatar_data(data["fim_pagamento"]),
             "fine": {"value": 2, "type": "PERCENTAGE"},
             "interest": {"value": 1},
-            "notificationDisabled": False
+            "notificationDisabled": False,
         }
 
-        assinatura = await client.post(f"{settings.ASAAS_BASE}/subscriptions", json=assinatura_payload, headers=headers)
+        assinatura = await client.post(
+            f"{settings.ASAAS_BASE}/subscriptions",
+            json=assinatura_payload,
+            headers=headers,
+        )
         if assinatura.status_code != 200:
             print("Erro ao criar assinatura:", assinatura.text)
-            assinatura.raise_for_status()
-
+        assinatura.raise_for_status()
         return assinatura.json()
