@@ -123,11 +123,15 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
     payload = {"phone": numero, "message": msg}
     url = (
         f"https://api.z-api.io/instances/{settings.ZAPI_INSTANCE_ID}"
-        f"/token/{settings.ZAPI_TOKEN}/send-message"
+        f"/token/{settings.ZAPI_TOKEN}/send-text"
     )
+    headers = {
+        "Content-Type": "application/json",
+        "X-Security-Token": settings.ZAPI_SECURITY_TOKEN
+    }
 
     async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(url, json=payload)
+        r = await client.post(url, headers=headers, json=payload)
         if r.status_code == 200:
             print("✅ Mensagem enviada com sucesso")
         else:
