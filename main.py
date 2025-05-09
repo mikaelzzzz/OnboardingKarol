@@ -1,4 +1,6 @@
-from fastapi import FastAPI, Request
+# ~/Downloads/OnboardingKarol/main.py
+
+from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
 from helpers import (
@@ -38,7 +40,8 @@ async def zapsign_webhook(payload: WebhookPayload):
     name = payload.signer_who_signed.name
     phone = f"{payload.signer_who_signed.phone_country}{payload.signer_who_signed.phone_number}"
 
-    respostas = {a.variable.lower(): a.value for a in payload.answers}
+    # Transforma respostas em dicionário
+    respostas = {a.variable.lower().strip(): a.value.strip() for a in payload.answers}
 
     aluno_ja_existe = await notion_search_by_email(email)
     print("Aluno já existe no Notion:", bool(aluno_ja_existe))
@@ -46,12 +49,18 @@ async def zapsign_webhook(payload: WebhookPayload):
     await send_whatsapp_message(name, email, phone, not aluno_ja_existe)
 
     if not aluno_ja_existe:
+        plano_convertido = {
+            "vip": "VIP",
+            "light": "Light",
+            "flexge + conversação com nativos": "Conversação com nativos e Flexge"
+        }.get(respostas.get("tipo do pacote, escrever “vip” ou “light” ou “flexge + conversação com nativos", "").lower(), "—")
+
         await notion_create_page({
             "name": name,
             "email": email,
             "telefone": phone,
             "cpf": respostas.get("cpf", ""),
-            "pacote": respostas.get("tipo do pacote, escrever “vip” ou “light” ou “flexge + conversação com nativos", ""),
+            "pacote": plano_convertido,
             "inicio": respostas.get("data do primeiro  pagamento", ""),
             "fim": respostas.get("data último pagamento", "")
         })
