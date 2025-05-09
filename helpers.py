@@ -2,7 +2,6 @@ import re
 import httpx
 from pydantic_settings import BaseSettings
 
-
 class Settings(BaseSettings):
     NOTION_TOKEN: str
     NOTION_DB_ID: str
@@ -15,9 +14,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
 
-
 settings = Settings()
-
 
 def get_headers_notion():
     return {
@@ -26,17 +23,15 @@ def get_headers_notion():
         "Content-Type": "application/json"
     }
 
+def limpar_telefone(numero: str) -> str:
+    # Remove tudo que não é número
+    somente_digitos = re.sub(r"\D", "", numero)
+    # Retorna apenas os 11 últimos dígitos (DDD + número)
+    return somente_digitos[-11:]
 
 async def notion_search_by_email(email: str):
     async with httpx.AsyncClient(timeout=10) as client:
-        payload = {
-            "filter": {
-                "property": "Email",
-                "email": {
-                    "equals": email
-                }
-            }
-        }
+        payload = {"filter": {"property": "Email", "email": {"equals": email}}}
         resp = await client.post(
             f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID}/query",
             headers=get_headers_notion(),
@@ -44,7 +39,6 @@ async def notion_search_by_email(email: str):
         )
         resp.raise_for_status()
         return resp.json()["results"]
-
 
 async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
     msg = (
@@ -58,36 +52,25 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
         "Se precisar de algo, pode contar com a gente! Rumo à fluência!"
     )
 
-    cleaned_phone = re.sub(r"\D", "", phone)
-
     payload = {
-        "phone": cleaned_phone,
+        "phone": limpar_telefone(phone),
         "message": msg
     }
 
     url = f"https://api.z-api.io/instances/{settings.ZAPI_INSTANCE_ID}/token/{settings.ZAPI_TOKEN}/send-message"
 
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(url, json=payload)
-            r.raise_for_status()
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(url, json=payload)
+        if r.status_code != 200:
+            print("❌ Erro ao enviar mensagem no Z-API:", r.text)
+        else:
             print("✅ Mensagem enviada com sucesso")
-    except Exception as e:
-        print(f"❌ Erro ao enviar mensagem via Z-API: {e}")
-
 
 async def criar_assinatura_asaas(data: dict):
-    raw_phone = re.sub(r"\D", "", data["telefone"])
-
-    # Valida o celular: 11 dígitos esperados (ex: 11999999999)
-    if len(raw_phone) != 11:
-        print(f"⚠️ Telefone inválido: {raw_phone}")
-        raise ValueError("Telefone inválido. Deve conter 11 dígitos (DDD + número).")
-
     customer_payload = {
         "name": data["nome"],
         "email": data["email"],
-        "mobilePhone": raw_phone,
+        "mobilePhone": limpar_telefone(data["telefone"]),
         "cpfCnpj": re.sub(r"\D", "", data["cpf"])
     }
 
@@ -97,13 +80,12 @@ async def criar_assinatura_asaas(data: dict):
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            r = await client.post(f"{settings.ASAAS_BASE}/customers", json=customer_payload, headers=headers)
+        r = await client.post(f"{settings.ASAAS_BASE}/customers", json=customer_payload, headers=headers)
+        if r.status_code != 200:
+            print("Erro ao criar cliente:", r.text)
             r.raise_for_status()
-            customer_id = r.json()["id"]
-        except Exception as e:
-            print(f"❌ Erro ao criar cliente: {r.text}")
-            raise e
+
+        customer_id = r.json()["id"]
 
         assinatura_payload = {
             "customer": customer_id,
@@ -118,11 +100,8 @@ async def criar_assinatura_asaas(data: dict):
             "notificationDisabled": False
         }
 
-        try:
-            assinatura = await client.post(f"{settings.ASAAS_BASE}/subscriptions", json=assinatura_payload, headers=headers)
-            assinatura.raise_for_status()
-            print("✅ Assinatura criada com sucesso")
-            return assinatura.json()
-        except Exception as e:
-            print(f"❌ Erro ao criar assinatura: {assinatura.text}")
-            raise e
+        assinatura = await client.post(f"{settings.ASAAS_BASE}/subscriptions", json=assinatura_payload, headers=headers)
+        if assinatura.status_code != 200:
+            print("Erro ao criar assinatura:", assinatura.text)
+        assinatura.raise_for_status()
+        return assinatura.json()
