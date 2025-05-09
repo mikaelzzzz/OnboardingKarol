@@ -1,8 +1,9 @@
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from typing import List
-from helpers import (
+from app.helpers import (
     notion_search_by_email,
+    notion_create_page,
     send_whatsapp_message,
     criar_assinatura_asaas,
 )
@@ -33,34 +34,34 @@ async def zapsign_webhook(payload: WebhookPayload):
     if payload.status != "signed":
         return
 
-    try:
-        email = payload.signer_who_signed.email
-        name = payload.signer_who_signed.name
-        phone = f"{payload.signer_who_signed.phone_country}{payload.signer_who_signed.phone_number}"
+    email = payload.signer_who_signed.email
+    name = payload.signer_who_signed.name
+    phone = f"{payload.signer_who_signed.phone_country}{payload.signer_who_signed.phone_number}"
 
-        respostas = {a.variable.lower(): a.value for a in payload.answers}
+    respostas = {a.variable.lower(): a.value for a in payload.answers}
 
-        # 1️⃣ Verifica se o aluno já existe no Notion
-        aluno_ja_existe = await notion_search_by_email(email)
-        print("Aluno já existe no Notion:", bool(aluno_ja_existe))
+    aluno_ja_existe = await notion_search_by_email(email)
+    print("Aluno já existe no Notion:", bool(aluno_ja_existe))
 
-        # 2️⃣ Envia mensagem via Z-API
-        await send_whatsapp_message(name, email, phone, not aluno_ja_existe)
-        print("Mensagem enviada")
+    await send_whatsapp_message(name, email, phone, not aluno_ja_existe)
 
-        # 3️⃣ Cria assinatura no Asaas
-        await criar_assinatura_asaas({
-            "nome": name,
+    if not aluno_ja_existe:
+        await notion_create_page({
+            "name": name,
             "email": email,
             "telefone": phone,
             "cpf": respostas.get("cpf", ""),
-            "valor": respostas.get("r$valor das parcelas", "0"),
-            "vencimento": respostas.get("data do primeiro  pagamento", ""),
-            "fim_pagamento": respostas.get("data último pagamento", "")
+            "pacote": respostas.get("tipo do pacote, escrever “vip” ou “light” ou “flexge + conversação com nativos", ""),
+            "inicio": respostas.get("data do primeiro  pagamento", ""),
+            "fim": respostas.get("data último pagamento", "")
         })
-        print("Assinatura criada")
 
-    except Exception as e:
-        print("Erro no webhook:", e)
-        # Não retorna erro para o ZapSign
-        return
+    await criar_assinatura_asaas({
+        "nome": name,
+        "email": email,
+        "telefone": phone,
+        "cpf": respostas.get("cpf", ""),
+        "valor": respostas.get("r$valor das parcelas", "0"),
+        "vencimento": respostas.get("data do primeiro  pagamento", ""),
+        "fim_pagamento": respostas.get("data último pagamento", "")
+    })

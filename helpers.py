@@ -1,5 +1,6 @@
 import re
 import httpx
+from datetime import datetime
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -16,18 +17,18 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+def formatar_data(data: str) -> str:
+    try:
+        return datetime.strptime(data.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
+    except:
+        return ""
+
 def get_headers_notion():
     return {
         "Authorization": f"Bearer {settings.NOTION_TOKEN}",
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json"
     }
-
-def limpar_telefone(numero: str) -> str:
-    # Remove tudo que não é número
-    somente_digitos = re.sub(r"\D", "", numero)
-    # Retorna apenas os 11 últimos dígitos (DDD + número)
-    return somente_digitos[-11:]
 
 async def notion_search_by_email(email: str):
     async with httpx.AsyncClient(timeout=10) as client:
@@ -40,7 +41,29 @@ async def notion_search_by_email(email: str):
         resp.raise_for_status()
         return resp.json()["results"]
 
+async def notion_create_page(data: dict):
+    payload = {
+        "parent": {"database_id": settings.NOTION_DB_ID},
+        "properties": {
+            "Student Name": {"title": [{"text": {"content": data["name"]}}]},
+            "Email": {"email": data["email"]},
+            "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
+            "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
+            "Tipo do pacote": {"select": {"name": data["pacote"]}},
+            "Data início": {"date": {"start": data["inicio"]}},
+            "Data fim": {"date": {"start": data["fim"]}},
+        }
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post("https://api.notion.com/v1/pages", headers=get_headers_notion(), json=payload)
+        resp.raise_for_status()
+
 async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
+    numero = re.sub(r"\D", "", phone)
+    if len(numero) != 11:
+        print(f"⚠️ Telefone inválido: {numero}")
+        return
+
     msg = (
         f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
         f"Tenho certeza de que será uma experiência incrível para você!\n"
@@ -53,30 +76,29 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
     )
 
     payload = {
-        "phone": limpar_telefone(phone),
+        "phone": numero,
         "message": msg
     }
 
     url = f"https://api.z-api.io/instances/{settings.ZAPI_INSTANCE_ID}/token/{settings.ZAPI_TOKEN}/send-message"
-
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(url, json=payload)
-        if r.status_code != 200:
-            print("❌ Erro ao enviar mensagem no Z-API:", r.text)
-        else:
+        if r.status_code == 200:
             print("✅ Mensagem enviada com sucesso")
+        else:
+            print("❌ Falha ao enviar mensagem:", r.text)
 
 async def criar_assinatura_asaas(data: dict):
-    customer_payload = {
-        "name": data["nome"],
-        "email": data["email"],
-        "mobilePhone": limpar_telefone(data["telefone"]),
-        "cpfCnpj": re.sub(r"\D", "", data["cpf"])
-    }
-
     headers = {
         "Content-Type": "application/json",
         "access-token": settings.ASAAS_API_KEY
+    }
+
+    customer_payload = {
+        "name": data["nome"],
+        "email": data["email"],
+        "mobilePhone": re.sub(r"\D", "", data["telefone"]),
+        "cpfCnpj": re.sub(r"\D", "", data["cpf"])
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -84,7 +106,6 @@ async def criar_assinatura_asaas(data: dict):
         if r.status_code != 200:
             print("Erro ao criar cliente:", r.text)
             r.raise_for_status()
-
         customer_id = r.json()["id"]
 
         assinatura_payload = {
@@ -93,8 +114,8 @@ async def criar_assinatura_asaas(data: dict):
             "cycle": "MONTHLY",
             "value": float(data["valor"].replace("R$", "").replace(",", ".").strip()),
             "description": "Aulas de Inglês",
-            "nextDueDate": data["vencimento"],
-            "endDate": data["fim_pagamento"],
+            "nextDueDate": formatar_data(data["vencimento"]),
+            "endDate": formatar_data(data["fim_pagamento"]),
             "fine": {"value": 2, "type": "PERCENTAGE"},
             "interest": {"value": 1},
             "notificationDisabled": False
@@ -103,5 +124,6 @@ async def criar_assinatura_asaas(data: dict):
         assinatura = await client.post(f"{settings.ASAAS_BASE}/subscriptions", json=assinatura_payload, headers=headers)
         if assinatura.status_code != 200:
             print("Erro ao criar assinatura:", assinatura.text)
-        assinatura.raise_for_status()
+            assinatura.raise_for_status()
+
         return assinatura.json()
