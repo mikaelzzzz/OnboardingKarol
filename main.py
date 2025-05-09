@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from typing import List
-from app.helpers import (
+from helpers import (
     notion_search_by_email,
     notion_create_page,
     send_whatsapp_message,
