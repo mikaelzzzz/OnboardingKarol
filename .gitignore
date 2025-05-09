@@ -1,0 +1,29 @@
+# Ambientes virtuais
+venv/
+.env
+.env.*
+
+# Arquivos de sistema
+.DS_Store
+
+# Arquivos do Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Logs
+*.log
+
+# VS Code
+.vscode/
+
+# Arquivos de pacotes
+*.egg-info/
+dist/
+build/
+
+# Arquivos temporários
+*.swp
+*.bak
+*~
+
