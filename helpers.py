@@ -20,21 +20,21 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-# ───────────── Helpers de formatação ─────────────
+# ─────── Helpers de formatação ───────
 def limpar_telefone(numero: str) -> str:
     """Mantém apenas DDD + celular (11 últimos dígitos)."""
     return re.sub(r"\D", "", numero)[-11:]
 
 
 def formatar_data(data: str) -> str:
-    """Converte dd/mm/yyyy → YYYY-MM-DD (ou string vazia se falhar)."""
+    """Converte 'dd/mm/YYYY' → 'YYYY-MM-DD'. Retorna '' se inválido."""
     try:
         return datetime.strptime(data.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
     except Exception:
         return ""
 
 
-# ───────────── Notion ─────────────
+# ─────── Notion ───────
 def get_headers_notion():
     return {
         "Authorization": f"Bearer {settings.NOTION_TOKEN}",
@@ -56,6 +56,10 @@ async def notion_search_by_email(email: str):
 
 
 async def notion_create_page(data: dict):
+    # já converte as datas para ISO 8601
+    inicio_iso = formatar_data(data.get("inicio", ""))
+    fim_iso = formatar_data(data.get("fim", ""))
+
     payload = {
         "parent": {"database_id": settings.NOTION_DB_ID},
         "properties": {
@@ -64,22 +68,21 @@ async def notion_create_page(data: dict):
             "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
             "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
             "Tipo do pacote": {"select": {"name": data["pacote"]}},
-            "Data início": {"date": {"start": data["inicio"]}},
-            "Data fim": {"date": {"start": data["fim"]}},
+            "Data início": {"date": {"start": inicio_iso}},
+            "Data fim": {"date": {"start": fim_iso}},
         },
     }
+
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
-            "https://api.notion.com/v1/pages",
-            headers=get_headers_notion(),
-            json=payload,
+            "https://api.notion.com/v1/pages", headers=get_headers_notion(), json=payload
         )
         if r.status_code != 200:
-            print("❌ Notion payload rejeitado:", r.text)  # <- mostra o detalhe
+            print("❌ Notion payload rejeitado:", r.text)
         r.raise_for_status()
 
 
-# ───────────── Z-API / WhatsApp ─────────────
+# ─────── Z-API / WhatsApp ───────
 async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
     numero = limpar_telefone(phone)
     if len(numero) != 11:
@@ -111,7 +114,7 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
             print("❌ Falha ao enviar mensagem:", r.text)
 
 
-# ───────────── Asaas ─────────────
+# ─────── Asaas ───────
 async def criar_assinatura_asaas(data: dict):
     headers = {
         "Content-Type": "application/json",
@@ -126,12 +129,12 @@ async def criar_assinatura_asaas(data: dict):
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
-        # 1) Cria (ou tenta criar) o cliente
+        # 1) Cria cliente
         r = await client.post(
             f"{settings.ASAAS_BASE}/customers", json=customer_payload, headers=headers
         )
         if r.status_code != 200:
-            print("Erro ao criar cliente:", r.text)
+            print("❌ Erro ao criar cliente:", r.text)
             r.raise_for_status()
         customer_id = r.json()["id"]
 
@@ -157,6 +160,6 @@ async def criar_assinatura_asaas(data: dict):
             headers=headers,
         )
         if assinatura.status_code != 200:
-            print("Erro ao criar assinatura:", assinatura.text)
+            print("❌ Erro ao criar assinatura:", assinatura.text)
         assinatura.raise_for_status()
         return assinatura.json()
