@@ -1,3 +1,4 @@
+
 import re
 import httpx
 from pydantic_settings import BaseSettings
@@ -70,7 +71,12 @@ async def criar_assinatura_asaas(data: dict):
 
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(f"{settings.ASAAS_BASE}/customers", json=customer_payload, headers=headers)
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except httpx.HTTPStatusError:
+            print("Erro ao criar cliente:", r.text)
+            raise
+
         customer_id = r.json()["id"]
 
         assinatura_payload = {
@@ -87,5 +93,10 @@ async def criar_assinatura_asaas(data: dict):
         }
 
         assinatura = await client.post(f"{settings.ASAAS_BASE}/subscriptions", json=assinatura_payload, headers=headers)
-        assinatura.raise_for_status()
+        try:
+            assinatura.raise_for_status()
+        except httpx.HTTPStatusError:
+            print("Erro ao criar assinatura:", assinatura.text)
+            raise
+
         return assinatura.json()

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from typing import List
 from helpers import (
@@ -33,22 +33,34 @@ async def zapsign_webhook(payload: WebhookPayload):
     if payload.status != "signed":
         return
 
-    email = payload.signer_who_signed.email
-    name = payload.signer_who_signed.name
-    phone = f"{payload.signer_who_signed.phone_country}{payload.signer_who_signed.phone_number}"
+    try:
+        email = payload.signer_who_signed.email
+        name = payload.signer_who_signed.name
+        phone = f"{payload.signer_who_signed.phone_country}{payload.signer_who_signed.phone_number}"
 
-    # Transforma as respostas em dicionário
-    respostas = {a.variable.lower(): a.value for a in payload.answers}
+        respostas = {a.variable.lower(): a.value for a in payload.answers}
 
-    aluno_ja_existe = await notion_search_by_email(email)
-    await send_whatsapp_message(name, email, phone, not aluno_ja_existe)
+        # 1️⃣ Verifica se o aluno já existe no Notion
+        aluno_ja_existe = await notion_search_by_email(email)
+        print("Aluno já existe no Notion:", bool(aluno_ja_existe))
 
-    await criar_assinatura_asaas({
-        "nome": name,
-        "email": email,
-        "telefone": phone,
-        "cpf": respostas.get("cpf", ""),
-        "valor": respostas.get("r$valor das parcelas", "0"),
-        "vencimento": respostas.get("data do primeiro  pagamento", ""),
-        "fim_pagamento": respostas.get("data último pagamento", "")
-    })
+        # 2️⃣ Envia mensagem via Z-API
+        await send_whatsapp_message(name, email, phone, not aluno_ja_existe)
+        print("Mensagem enviada")
+
+        # 3️⃣ Cria assinatura no Asaas
+        await criar_assinatura_asaas({
+            "nome": name,
+            "email": email,
+            "telefone": phone,
+            "cpf": respostas.get("cpf", ""),
+            "valor": respostas.get("r$valor das parcelas", "0"),
+            "vencimento": respostas.get("data do primeiro  pagamento", ""),
+            "fim_pagamento": respostas.get("data último pagamento", "")
+        })
+        print("Assinatura criada")
+
+    except Exception as e:
+        print("Erro no webhook:", e)
+        # Não retorna erro para o ZapSign
+        return
