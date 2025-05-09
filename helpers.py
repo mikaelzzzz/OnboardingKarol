@@ -1,10 +1,7 @@
-# ~/Downloads/OnboardingKarol/helpers.py
-
 import re
 import httpx
 from datetime import datetime
 from pydantic_settings import BaseSettings
-
 
 class Settings(BaseSettings):
     NOTION_TOKEN: str
@@ -18,26 +15,19 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
 
-
 settings = Settings()
-
 
 # ─────── Helpers de formatação ───────
 def limpar_telefone(numero: str) -> str:
     """Mantém apenas últimos 11 dígitos (DDD+celular)."""
     return re.sub(r"\D", "", numero)[-11:]
 
-
 def formatar_data(data: str) -> str:
-    """
-    Converte 'dd/mm/YYYY' → 'YYYY-MM-DD'.
-    Se falhar, retorna string vazia (omitida pelo Notion).
-    """
+    """Converte 'dd/mm/YYYY' → 'YYYY-MM-DD'. Se falhar, retorna string vazia."""
     try:
         return datetime.strptime(data.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
     except Exception:
         return ""
-
 
 # ─────── Notion ───────
 def get_headers_notion():
@@ -46,7 +36,6 @@ def get_headers_notion():
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json",
     }
-
 
 async def notion_search_by_email(email: str):
     async with httpx.AsyncClient(timeout=10) as client:
@@ -59,12 +48,7 @@ async def notion_search_by_email(email: str):
         r.raise_for_status()
         return r.json()["results"]
 
-
 async def notion_create_page(data: dict):
-    """
-    data deve ter as chaves:
-      - name, email, telefone, cpf, pacote, inicio, fim
-    """
     payload = {
         "parent": {"database_id": settings.NOTION_DB_ID},
         "properties": {
@@ -78,7 +62,7 @@ async def notion_create_page(data: dict):
             "CPF": {
                 "rich_text": [{"text": {"content": data["cpf"]}}]
             },
-            "Plano": {"select": {"name": data["pacote"] or "—"}},
+            "Plano": {"status": {"name": data["pacote"] or "—"}},
             "Inicio do contrato": {
                 "date": {"start": formatar_data(data.get("inicio", ""))}
             },
@@ -97,7 +81,6 @@ async def notion_create_page(data: dict):
         if r.status_code != 200:
             print("❌ Notion payload rejeitado:", r.text)
         r.raise_for_status()
-
 
 # ─────── Z-API / WhatsApp ───────
 async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
@@ -127,7 +110,7 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
     )
     headers = {
         "Content-Type": "application/json",
-        "X-Security-Token": settings.ZAPI_SECURITY_TOKEN
+        "Client-Token": settings.ZAPI_SECURITY_TOKEN,
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -137,22 +120,13 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
         else:
             print("❌ Falha ao enviar mensagem:", r.text)
 
-
 # ─────── Asaas ───────
 async def criar_assinatura_asaas(data: dict):
-    """
-    data deve ter as chaves:
-      - nome, email, telefone, cpf,
-      - valor (string "R$ 123,45"),
-      - vencimento ("dd/mm/YYYY"),
-      - fim_pagamento ("dd/mm/YYYY")
-    """
     headers = {
         "Content-Type": "application/json",
         "access-token": settings.ASAAS_API_KEY,
     }
 
-    # 1) Cria (ou retorna) cliente no Asaas
     customer_payload = {
         "name": data["nome"],
         "email": data["email"],
@@ -169,7 +143,6 @@ async def criar_assinatura_asaas(data: dict):
             r.raise_for_status()
         customer_id = r.json()["id"]
 
-        # 2) Cria assinatura mensal
         assinatura_payload = {
             "customer": customer_id,
             "billingType": "BOLETO",
