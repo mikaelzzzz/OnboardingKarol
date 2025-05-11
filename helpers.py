@@ -175,7 +175,7 @@ async def criar_assinatura_asaas(data: dict):
         # 2) Cria assinatura mensal
         assinatura_payload = {
             "customer": customer_id,
-            "billingType": "BOLETO",
+            "billingType": "UNDEFINED",
             "cycle": "MONTHLY",
             "value": float(
                 data["valor"].replace("R$", "").replace(".", "").replace(",", ".").strip()
