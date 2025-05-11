@@ -1,3 +1,5 @@
+# ~/Downloads/OnboardingKarol/main.py
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
@@ -6,13 +8,11 @@ from helpers import (
     notion_create_page,
     send_whatsapp_message,
     criar_assinatura_asaas,
+    map_pacote,
 )
 
 app = FastAPI()
-
-@app.get("/")
-async def health():
-    return {"status": "ok"}
+processed_tokens: set[str] = set()
 
 
 class Answer(BaseModel):
@@ -28,43 +28,51 @@ class Signer(BaseModel):
 
 
 class WebhookPayload(BaseModel):
+    token: str
     status: str
     answers: List[Answer]
     signer_who_signed: Signer
 
 
+@app.get("/")
+async def health():
+    return {"status": "ok"}
+
+
 @app.post("/webhook/zapsign", status_code=204)
 async def zapsign_webhook(payload: WebhookPayload):
-    # só seguimos quando assinado
+    # idempotência
+    if payload.token in processed_tokens:
+        return
+    processed_tokens.add(payload.token)
+
     if payload.status != "signed":
         return
 
-    name = payload.signer_who_signed.name
-    email = payload.signer_who_signed.email
+    email = payload.signer_who_signed.email.strip().lower()
+    name = payload.signer_who_signed.name.strip()
     phone = f"{payload.signer_who_signed.phone_country}{payload.signer_who_signed.phone_number}"
 
-    # converte lista de Answer em dict
     respostas = {a.variable.lower(): a.value for a in payload.answers}
 
-    # 1) Verifica no Notion
-    existe = await notion_search_by_email(email)
-    print("Aluno já existe no Notion:", bool(existe))
+    encontrados = await notion_search_by_email(email)
+    aluno_existe = bool(encontrados)
+    print("Aluno já existe no Notion:", aluno_existe)
 
-    # 2) Envia mensagem de boas-vindas ou renovação
-    await send_whatsapp_message(name, email, phone, not existe)
+    await send_whatsapp_message(name, email, phone, not aluno_existe)
 
-    # 3) Se for novo aluno, cria página no Notion
-    if not existe:
+    if not aluno_existe:
+        pacote = map_pacote(respostas)
         await notion_create_page({
             "name": name,
             "email": email,
             "telefone": phone,
             "cpf": respostas.get("cpf", ""),
+            "pacote": pacote,
             "inicio": respostas.get("data do primeiro  pagamento", ""),
-            "fim": respostas.get("data último pagamento", "")
+            "fim": respostas.get("data último pagamento", ""),
         })
 
-    # 4) Cria assinatura no Asaas
     await criar_assinatura_asaas({
         "nome": name,
         "email": email,
@@ -72,5 +80,5 @@ async def zapsign_webhook(payload: WebhookPayload):
         "cpf": respostas.get("cpf", ""),
         "valor": respostas.get("r$valor das parcelas", "0"),
         "vencimento": respostas.get("data do primeiro  pagamento", ""),
-        "fim_pagamento": respostas.get("data último pagamento", "")
+        "fim_pagamento": respostas.get("data último pagamento", ""),
     })

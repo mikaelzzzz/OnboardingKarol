@@ -39,27 +39,29 @@ def formatar_data(data: str) -> str:
         return ""
 
 
-def map_pacote(raw: str) -> str:
+def map_pacote(respostas: dict) -> str:
     """
-    Normaliza o nome do plano para corresponder exatamente às opções do Notion.
-    Opções válidas no Notion:
-      - VIP
-      - Light
-      - Flexge
-      - Conversação com nativos e Flexge
+    Recupera o valor bruto da resposta cujo variable contenha 'tipo do pacote'
+    e normaliza para uma das opções exatas do Notion.
     """
-    val = (raw or "").strip().lower()
-    if val.startswith("vip"):
+    raw = ""
+    for key, val in respostas.items():
+        if "tipo do pacote" in key:
+            raw = val
+            break
+
+    v = (raw or "").strip().lower()
+    if v.startswith("vip"):
         return "VIP"
-    if val.startswith("light"):
+    if v.startswith("light"):
         return "Light"
-    if "flexge" in val and "conversação" in val:
+    if "flexge" in v and "conversação" in v:
         return "Conversação com nativos e Flexge"
-    if "flexge" in val:
+    if "flexge" in v:
         return "Flexge"
-    if "conversação" in val:
+    if "conversação" in v:
         return "Conversação com nativos e Flexge"
-    return raw or "—"
+    return "—"
 
 
 # ─────── Notion ───────
@@ -80,37 +82,22 @@ async def notion_search_by_email(email: str):
             json=payload,
         )
         r.raise_for_status()
-        return r.json()["results"]  # lista de pages
+        return r.json()["results"]
 
 
 async def notion_create_page(data: dict):
-    """
-    data deve ter as chaves:
-      - name, email, telefone, cpf, pacote, inicio, fim
-    """
     payload = {
         "parent": {"database_id": settings.NOTION_DB_ID},
         "properties": {
-            "Student Name": {
-                "title": [{"text": {"content": data["name"]}}]
-            },
+            "Student Name": {"title": [{"text": {"content": data["name"]}}]},
             "Email": {"email": data["email"]},
-            "Telefone": {
-                "rich_text": [{"text": {"content": data["telefone"]}}]
-            },
-            "CPF": {
-                "rich_text": [{"text": {"content": data["cpf"]}}]
-            },
+            "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
+            "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
             "Plano": {"select": {"name": data["pacote"]}},
-            "Inicio do contrato": {
-                "date": {"start": formatar_data(data.get("inicio", ""))}
-            },
-            "Fim do contrato": {
-                "date": {"start": formatar_data(data.get("fim", ""))}
-            },
+            "Inicio do contrato": {"date": {"start": formatar_data(data.get("inicio", ""))}},
+            "Fim do contrato": {"date": {"start": formatar_data(data.get("fim", ""))}},
         },
     }
-
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             "https://api.notion.com/v1/pages",
@@ -150,7 +137,7 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
     )
     headers = {
         "Content-Type": "application/json",
-        "X-Security-Token": settings.ZAPI_SECURITY_TOKEN,
+        "Client-Token": settings.ZAPI_SECURITY_TOKEN,  # agora usa Client-Token
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -163,47 +150,37 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
 
 # ─────── Asaas ───────
 async def criar_assinatura_asaas(data: dict):
-    """
-    data deve ter as chaves:
-      - nome, email, telefone, cpf,
-      - valor (string "R$ 123,45"),
-      - vencimento ("dd/mm/YYYY"),
-      - fim_pagamento ("dd/mm/YYYY")
-    """
     headers = {
         "Content-Type": "application/json",
         "access-token": settings.ASAAS_API_KEY,
     }
-
     async with httpx.AsyncClient(timeout=10) as client:
-        # 1) tentar buscar cliente existente
-        params = {"email": data["email"]}
+        # busca ou cria cliente
         get_r = await client.get(
-            f"{settings.ASAAS_BASE}/customers", headers=headers, params=params
+            f"{settings.ASAAS_BASE}/customers",
+            headers=headers,
+            params={"email": data["email"]},
         )
         get_r.raise_for_status()
-        customers = get_r.json().get("data", [])
-        if customers:
-            customer_id = customers[0]["id"]
+        custs = get_r.json().get("data", [])
+        if custs:
+            cid = custs[0]["id"]
         else:
-            # criar novo
-            customer_payload = {
+            cust_payload = {
                 "name": data["nome"],
                 "email": data["email"],
                 "mobilePhone": limpar_telefone(data["telefone"]),
                 "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
             }
             post_r = await client.post(
-                f"{settings.ASAAS_BASE}/customers", headers=headers, json=customer_payload
+                f"{settings.ASAAS_BASE}/customers", headers=headers, json=cust_payload
             )
-            if post_r.status_code != 200:
-                print("❌ Erro ao criar cliente:", post_r.text)
             post_r.raise_for_status()
-            customer_id = post_r.json()["id"]
+            cid = post_r.json()["id"]
 
-        # 2) criar assinatura mensal
-        assinatura_payload = {
-            "customer": customer_id,
+        # cria assinatura
+        sub_payload = {
+            "customer": cid,
             "billingType": "BOLETO",
             "cycle": "MONTHLY",
             "value": float(
@@ -217,9 +194,8 @@ async def criar_assinatura_asaas(data: dict):
             "interest": {"value": 1},
             "notificationDisabled": False,
         }
-
         sub_r = await client.post(
-            f"{settings.ASAAS_BASE}/subscriptions", headers=headers, json=assinatura_payload
+            f"{settings.ASAAS_BASE}/subscriptions", headers=headers, json=sub_payload
         )
         if sub_r.status_code != 200:
             print("❌ Erro ao criar assinatura:", sub_r.text)
