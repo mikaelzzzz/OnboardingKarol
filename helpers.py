@@ -1,3 +1,5 @@
+# ~/Downloads/OnboardingKarol/helpers.py
+
 import re
 import httpx
 from datetime import datetime
@@ -29,12 +31,35 @@ def limpar_telefone(numero: str) -> str:
 def formatar_data(data: str) -> str:
     """
     Converte 'dd/mm/YYYY' → 'YYYY-MM-DD'.
-    Se falhar, retorna string vazia (omitida no Notion).
+    Se falhar, retorna string vazia (omitida pelo Notion).
     """
     try:
         return datetime.strptime(data.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
     except Exception:
         return ""
+
+
+def map_pacote(raw: str) -> str:
+    """
+    Normaliza o nome do plano para corresponder exatamente às opções do Notion.
+    Opções válidas no Notion:
+      - VIP
+      - Light
+      - Flexge
+      - Conversação com nativos e Flexge
+    """
+    val = (raw or "").strip().lower()
+    if val.startswith("vip"):
+        return "VIP"
+    if val.startswith("light"):
+        return "Light"
+    if "flexge" in val and "conversação" in val:
+        return "Conversação com nativos e Flexge"
+    if "flexge" in val:
+        return "Flexge"
+    if "conversação" in val:
+        return "Conversação com nativos e Flexge"
+    return raw or "—"
 
 
 # ─────── Notion ───────
@@ -55,13 +80,13 @@ async def notion_search_by_email(email: str):
             json=payload,
         )
         r.raise_for_status()
-        return r.json()["results"]
+        return r.json()["results"]  # lista de pages
 
 
 async def notion_create_page(data: dict):
     """
-    Espera data com:
-      - name, email, telefone, cpf, inicio, fim
+    data deve ter as chaves:
+      - name, email, telefone, cpf, pacote, inicio, fim
     """
     payload = {
         "parent": {"database_id": settings.NOTION_DB_ID},
@@ -76,6 +101,7 @@ async def notion_create_page(data: dict):
             "CPF": {
                 "rich_text": [{"text": {"content": data["cpf"]}}]
             },
+            "Plano": {"select": {"name": data["pacote"]}},
             "Inicio do contrato": {
                 "date": {"start": formatar_data(data.get("inicio", ""))}
             },
@@ -106,8 +132,8 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
     if novo:
         msg = (
             f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
-            "Tenho certeza de que será uma experiência incrível para você!\n"
-            "Sou Marcello, seu ponto de contato para tudo o que precisar.\n\n"
+            f"Tenho certeza de que será uma experiência incrível para você!\n"
+            f"Sou Marcello, seu ponto de contato para tudo o que precisar.\n\n"
             f"Vi que seu e-mail cadastrado é {email}. Você deseja usá-lo para tudo ou prefere trocar?"
         )
     else:
@@ -138,9 +164,9 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
 # ─────── Asaas ───────
 async def criar_assinatura_asaas(data: dict):
     """
-    Espera data com:
+    data deve ter as chaves:
       - nome, email, telefone, cpf,
-      - valor ("R$ 123,45"),
+      - valor (string "R$ 123,45"),
       - vencimento ("dd/mm/YYYY"),
       - fim_pagamento ("dd/mm/YYYY")
     """
@@ -149,34 +175,39 @@ async def criar_assinatura_asaas(data: dict):
         "access-token": settings.ASAAS_API_KEY,
     }
 
-    # 1) Cria (ou retorna) cliente
-    customer_payload = {
-        "name": data["nome"],
-        "email": data["email"],
-        "mobilePhone": limpar_telefone(data["telefone"]),
-        "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
-    }
-
     async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(
-            f"{settings.ASAAS_BASE}/customers", json=customer_payload, headers=headers
+        # 1) tentar buscar cliente existente
+        params = {"email": data["email"]}
+        get_r = await client.get(
+            f"{settings.ASAAS_BASE}/customers", headers=headers, params=params
         )
-        if r.status_code != 200:
-            print("❌ Erro ao criar cliente:", r.text)
-            r.raise_for_status()
-        customer_id = r.json()["id"]
+        get_r.raise_for_status()
+        customers = get_r.json().get("data", [])
+        if customers:
+            customer_id = customers[0]["id"]
+        else:
+            # criar novo
+            customer_payload = {
+                "name": data["nome"],
+                "email": data["email"],
+                "mobilePhone": limpar_telefone(data["telefone"]),
+                "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
+            }
+            post_r = await client.post(
+                f"{settings.ASAAS_BASE}/customers", headers=headers, json=customer_payload
+            )
+            if post_r.status_code != 200:
+                print("❌ Erro ao criar cliente:", post_r.text)
+            post_r.raise_for_status()
+            customer_id = post_r.json()["id"]
 
-        # 2) Cria assinatura mensal
+        # 2) criar assinatura mensal
         assinatura_payload = {
             "customer": customer_id,
             "billingType": "BOLETO",
             "cycle": "MONTHLY",
             "value": float(
-                data["valor"]
-                .replace("R$", "")
-                .replace(".", "")
-                .replace(",", ".")
-                .strip()
+                data["valor"].replace("R$", "").replace(".", "").replace(",", ".").strip()
                 or 0
             ),
             "description": "Aulas de Inglês",
@@ -187,13 +218,11 @@ async def criar_assinatura_asaas(data: dict):
             "notificationDisabled": False,
         }
 
-        assinatura = await client.post(
-            f"{settings.ASAAS_BASE}/subscriptions",
-            json=assinatura_payload,
-            headers=headers,
+        sub_r = await client.post(
+            f"{settings.ASAAS_BASE}/subscriptions", headers=headers, json=assinatura_payload
         )
-        if assinatura.status_code != 200:
-            print("❌ Erro ao criar assinatura:", assinatura.text)
-        assinatura.raise_for_status()
+        if sub_r.status_code != 200:
+            print("❌ Erro ao criar assinatura:", sub_r.text)
+        sub_r.raise_for_status()
         print("✅ Assinatura criada com sucesso")
-        return assinatura.json()
+        return sub_r.json()
