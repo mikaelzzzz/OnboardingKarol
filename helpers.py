@@ -39,31 +39,6 @@ def formatar_data(data: str) -> str:
         return ""
 
 
-def map_pacote(respostas: dict) -> str:
-    """
-    Recupera o valor bruto da resposta cujo variable contenha 'tipo do pacote'
-    e normaliza para uma das opções exatas do Notion.
-    """
-    raw = ""
-    for key, val in respostas.items():
-        if "tipo do pacote" in key:
-            raw = val
-            break
-
-    v = (raw or "").strip().lower()
-    if v.startswith("vip"):
-        return "VIP"
-    if v.startswith("light"):
-        return "Light"
-    if "flexge" in v and "conversação" in v:
-        return "Conversação com nativos e Flexge"
-    if "flexge" in v:
-        return "Flexge"
-    if "conversação" in v:
-        return "Conversação com nativos e Flexge"
-    return "—"
-
-
 # ─────── Notion ───────
 def get_headers_notion():
     return {
@@ -82,22 +57,40 @@ async def notion_search_by_email(email: str):
             json=payload,
         )
         r.raise_for_status()
-        return r.json()["results"]
+        return r.json().get("results", [])
 
 
 async def notion_create_page(data: dict):
+    """
+    data deve ter as chaves:
+      - name, email, telefone, cpf, pacote, inicio, fim, endereco
+    """
     payload = {
         "parent": {"database_id": settings.NOTION_DB_ID},
         "properties": {
-            "Student Name": {"title": [{"text": {"content": data["name"]}}]},
+            "Student Name": {
+                "title": [{"text": {"content": data["name"]}}]
+            },
             "Email": {"email": data["email"]},
-            "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
-            "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
-            "Plano": {"select": {"name": data["pacote"]}},
-            "Inicio do contrato": {"date": {"start": formatar_data(data.get("inicio", ""))}},
-            "Fim do contrato": {"date": {"start": formatar_data(data.get("fim", ""))}},
+            "Telefone": {
+                "rich_text": [{"text": {"content": data["telefone"]}}]
+            },
+            "CPF": {
+                "rich_text": [{"text": {"content": data["cpf"]}}]
+            },
+            "Plano": {"select": {"name": data["pacote"] or "—"}},
+            "Inicio do contrato": {
+                "date": {"start": formatar_data(data.get("inicio", ""))}
+            },
+            "Fim do contrato": {
+                "date": {"start": formatar_data(data.get("fim", ""))}
+            },
+            "Endereço Completo": {
+                "rich_text": [{"text": {"content": data.get("endereco", "")}}]
+            },
         },
     }
+
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             "https://api.notion.com/v1/pages",
@@ -119,8 +112,8 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
     if novo:
         msg = (
             f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
-            f"Tenho certeza de que será uma experiência incrível para você!\n"
-            f"Sou Marcello, seu ponto de contato para tudo o que precisar.\n\n"
+            "Tenho certeza de que será uma experiência incrível para você!\n"
+            "Sou Marcello, seu ponto de contato para tudo o que precisar.\n\n"
             f"Vi que seu e-mail cadastrado é {email}. Você deseja usá-lo para tudo ou prefere trocar?"
         )
     else:
@@ -137,7 +130,7 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
     )
     headers = {
         "Content-Type": "application/json",
-        "Client-Token": settings.ZAPI_SECURITY_TOKEN,  # agora usa Client-Token
+        "X-Security-Token": settings.ZAPI_SECURITY_TOKEN,
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -150,37 +143,38 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
 
 # ─────── Asaas ───────
 async def criar_assinatura_asaas(data: dict):
+    """
+    data deve ter as chaves:
+      - nome, email, telefone, cpf,
+      - valor (string "R$ 123,45"),
+      - vencimento ("dd/mm/YYYY"),
+      - fim_pagamento ("dd/mm/YYYY")
+    """
     headers = {
         "Content-Type": "application/json",
         "access-token": settings.ASAAS_API_KEY,
     }
-    async with httpx.AsyncClient(timeout=10) as client:
-        # busca ou cria cliente
-        get_r = await client.get(
-            f"{settings.ASAAS_BASE}/customers",
-            headers=headers,
-            params={"email": data["email"]},
-        )
-        get_r.raise_for_status()
-        custs = get_r.json().get("data", [])
-        if custs:
-            cid = custs[0]["id"]
-        else:
-            cust_payload = {
-                "name": data["nome"],
-                "email": data["email"],
-                "mobilePhone": limpar_telefone(data["telefone"]),
-                "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
-            }
-            post_r = await client.post(
-                f"{settings.ASAAS_BASE}/customers", headers=headers, json=cust_payload
-            )
-            post_r.raise_for_status()
-            cid = post_r.json()["id"]
 
-        # cria assinatura
-        sub_payload = {
-            "customer": cid,
+    # 1) Cria (ou retorna) cliente no Asaas
+    customer_payload = {
+        "name": data["nome"],
+        "email": data["email"],
+        "mobilePhone": limpar_telefone(data["telefone"]),
+        "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
+    }
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            f"{settings.ASAAS_BASE}/customers", json=customer_payload, headers=headers
+        )
+        if r.status_code != 200:
+            print("❌ Erro ao criar cliente:", r.text)
+            r.raise_for_status()
+        customer_id = r.json()["id"]
+
+        # 2) Cria assinatura mensal
+        assinatura_payload = {
+            "customer": customer_id,
             "billingType": "BOLETO",
             "cycle": "MONTHLY",
             "value": float(
@@ -194,11 +188,14 @@ async def criar_assinatura_asaas(data: dict):
             "interest": {"value": 1},
             "notificationDisabled": False,
         }
-        sub_r = await client.post(
-            f"{settings.ASAAS_BASE}/subscriptions", headers=headers, json=sub_payload
+
+        assinatura = await client.post(
+            f"{settings.ASAAS_BASE}/subscriptions",
+            json=assinatura_payload,
+            headers=headers,
         )
-        if sub_r.status_code != 200:
-            print("❌ Erro ao criar assinatura:", sub_r.text)
-        sub_r.raise_for_status()
+        if assinatura.status_code != 200:
+            print("❌ Erro ao criar assinatura:", assinatura.text)
+        assinatura.raise_for_status()
         print("✅ Assinatura criada com sucesso")
-        return sub_r.json()
+        return assinatura.json()
