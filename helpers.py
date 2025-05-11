@@ -130,7 +130,7 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
     )
     headers = {
         "Content-Type": "application/json",
-        "X-Security-Token": settings.ZAPI_SECURITY_TOKEN,
+        "Client-Token": settings.ZAPI_SECURITY_TOKEN,
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -172,7 +172,7 @@ async def criar_assinatura_asaas(data: dict):
             r.raise_for_status()
         customer_id = r.json()["id"]
 
-        # 2) Cria assinatura mensal
+        # 2) Cria assinatura mensal como “pergunte ao cliente”
         assinatura_payload = {
             "customer": customer_id,
             "billingType": "UNDEFINED",
