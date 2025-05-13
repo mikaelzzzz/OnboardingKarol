@@ -68,26 +68,14 @@ async def notion_create_page(data: dict):
     payload = {
         "parent": {"database_id": settings.NOTION_DB_ID},
         "properties": {
-            "Student Name": {
-                "title": [{"text": {"content": data["name"]}}]
-            },
+            "Student Name": {"title": [{"text": {"content": data["name"]}}]},
             "Email": {"email": data["email"]},
-            "Telefone": {
-                "rich_text": [{"text": {"content": data["telefone"]}}]
-            },
-            "CPF": {
-                "rich_text": [{"text": {"content": data["cpf"]}}]
-            },
+            "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
+            "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
             "Plano": {"select": {"name": data["pacote"] or "—"}},
-            "Inicio do contrato": {
-                "date": {"start": formatar_data(data.get("inicio", ""))}
-            },
-            "Fim do contrato": {
-                "date": {"start": formatar_data(data.get("fim", ""))}
-            },
-            "Endereço Completo": {
-                "rich_text": [{"text": {"content": data.get("endereco", "")}}]
-            },
+            "Inicio do contrato": {"date": {"start": formatar_data(data.get("inicio", ""))}},
+            "Fim do contrato": {"date": {"start": formatar_data(data.get("fim", ""))}},
+            "Endereço Completo": {"rich_text": [{"text": {"content": data.get("endereco", "")}}]},
         },
     }
 
@@ -142,42 +130,6 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
 
 
 # ─────── Asaas ───────
-async def get_or_create_customer(data: dict) -> str:
-    """
-    Tenta buscar cliente por e-mail; se não encontrar, cria novo.
-    Retorna o customer_id.
-    """
-    headers = {
-        "Content-Type": "application/json",
-        "access-token": settings.ASAAS_API_KEY,
-    }
-    # busca
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(
-            f"{settings.ASAAS_BASE}/customers",
-            params={"email": data["email"]},
-            headers=headers,
-        )
-        r.raise_for_status()
-        items = r.json().get("data", [])
-        if items:
-            return items[0]["id"]
-        # cria novo
-        payload = {
-            "name": data["nome"],
-            "email": data["email"],
-            "mobilePhone": limpar_telefone(data["telefone"]),
-            "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
-        }
-        r2 = await client.post(
-            f"{settings.ASAAS_BASE}/customers", json=payload, headers=headers
-        )
-        if r2.status_code != 200:
-            print("❌ Erro ao criar cliente:", r2.text)
-        r2.raise_for_status()
-        return r2.json()["id"]
-
-
 async def criar_assinatura_asaas(data: dict):
     """
     data deve ter as chaves:
@@ -191,32 +143,53 @@ async def criar_assinatura_asaas(data: dict):
         "access-token": settings.ASAAS_API_KEY,
     }
 
-    customer_id = await get_or_create_customer(data)
-
-    assinatura_payload = {
-        "customer": customer_id,
-        "billingType": "UNDEFINED",
-        "cycle": "MONTHLY",
-        "value": float(
-            data["valor"].replace("R$", "").replace(".", "").replace(",", ".").strip()
-            or 0
-        ),
-        "description": "Aulas de Inglês",
-        "nextDueDate": formatar_data(data.get("vencimento", "")),
-        "endDate": formatar_data(data.get("fim_pagamento", "")),
-        "fine": {"value": 2, "type": "PERCENTAGE"},
-        "interest": {"value": 1},
-        "notificationDisabled": False,
-    }
-
     async with httpx.AsyncClient(timeout=10) as client:
+        # 1) Cria cliente (sempre retorna um ID)
+        customer_payload = {
+            "name": data["nome"],
+            "email": data["email"],
+            "mobilePhone": limpar_telefone(data["telefone"]),
+            "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
+        }
         r = await client.post(
+            f"{settings.ASAAS_BASE}/customers", json=customer_payload, headers=headers
+        )
+        r.raise_for_status()
+        customer_id = r.json()["id"]
+
+        # 2) Verifica **todas** as assinaturas desse cliente (qualquer status)
+        subs = await client.get(
+            f"{settings.ASAAS_BASE}/subscriptions",
+            params={"customer": customer_id},
+            headers=headers,
+        )
+        subs.raise_for_status()
+        if subs.json().get("data"):
+            print("⚠️ Já existe assinatura para este cliente, pulando criação")
+            return subs.json()["data"][0]
+
+        # 3) Cria nova assinatura como “pergunte ao cliente”
+        assinatura_payload = {
+            "customer": customer_id,
+            "billingType": "UNDEFINED",
+            "cycle": "MONTHLY",
+            "value": float(
+                data["valor"].replace("R$", "").replace(".", "").replace(",", ".").strip() or 0
+            ),
+            "description": "Aulas de Inglês",
+            "nextDueDate": formatar_data(data.get("vencimento", "")),
+            "endDate": formatar_data(data.get("fim_pagamento", "")),
+            "fine": {"value": 2, "type": "PERCENTAGE"},
+            "interest": {"value": 1},
+            "notificationDisabled": False,
+        }
+        assinatura = await client.post(
             f"{settings.ASAAS_BASE}/subscriptions",
             json=assinatura_payload,
             headers=headers,
         )
-        if r.status_code != 200:
-            print("❌ Erro ao criar assinatura:", r.text)
-        r.raise_for_status()
+        if assinatura.status_code != 200:
+            print("❌ Erro ao criar assinatura:", assinatura.text)
+        assinatura.raise_for_status()
         print("✅ Assinatura criada com sucesso")
-        return r.json()
+        return assinatura.json()
