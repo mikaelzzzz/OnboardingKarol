@@ -36,43 +36,44 @@ async def zapsign_webhook(payload: WebhookPayload):
     if payload.status != "signed":
         return
 
-    email = payload.signer_who_signed.email
-    name = payload.signer_who_signed.name
+    # ── dados principais ───────────────────────────────────────────────
+    email = payload.signer_who_signed.email.strip().lower()  # ← normaliza
+    name  = payload.signer_who_signed.name.strip()
     phone = f"{payload.signer_who_signed.phone_country}{payload.signer_who_signed.phone_number}"
 
-    # monta dicionário das respostas, chave em minúsculas
+    # transforma respostas do Zapsign em dicionário minúsculo
     respostas = {a.variable.lower(): a.value for a in payload.answers}
 
-    # checa existência no Notion
-    already = await notion_search_by_email(email)
-    print("Aluno já existe no Notion:", bool(already))
+    # ── aluno existe? ──────────────────────────────────────────────────
+    alunos = await notion_search_by_email(email)
+    aluno_existe = len(alunos) > 0          # ← uso explícito de tamanho
+    print(f"[Notion] encontrados: {len(alunos)} páginas para {email}")
 
-    # envia boas-vindas / renovação
-    await send_whatsapp_message(name, email, phone, not already)
+    # ── WhatsApp (mensagem certa) ──────────────────────────────────────
+    await send_whatsapp_message(name, email, phone, novo=not aluno_existe)
 
-    # cria página no Notion se for aluno novo
-    if not already:
+    # ── cria página só se for novo ─────────────────────────────────────
+    if not aluno_existe:
         await notion_create_page({
-            "name": name,
-            "email": email,
-            "telefone": phone,
-            "cpf": respostas.get("cpf", ""),
-            "pacote": respostas.get(
-                "tipo do pacote, escrever “vip” ou “light” ou “flexge + conversação com nativos”",
-                ""
+            "name":      name,
+            "email":     email,
+            "telefone":  phone,
+            "cpf":       respostas.get("cpf", ""),
+            "pacote":    respostas.get(
+                "tipo do pacote, escrever “vip” ou “light” ou “flexge + conversação com nativos", ""
             ),
-            "inicio": respostas.get("data do primeiro  pagamento", ""),
-            "fim": respostas.get("data último pagamento", ""),
-            "endereco": respostas.get("endereço completo", "")
+            "inicio":    respostas.get("data do primeiro  pagamento", ""),
+            "fim":       respostas.get("data último pagamento", ""),
+            "endereco":  respostas.get("endereço completo", ""),
         })
 
-    # cria assinatura no Asaas
+    # ── cria / obtém cliente & assinatura ─────────────────────────────
     await criar_assinatura_asaas({
-        "nome": name,
-        "email": email,
-        "telefone": phone,
-        "cpf": respostas.get("cpf", ""),
-        "valor": respostas.get("r$valor das parcelas", "0"),
-        "vencimento": respostas.get("data do primeiro  pagamento", ""),
+        "nome":          name,
+        "email":         email,
+        "telefone":      phone,
+        "cpf":           respostas.get("cpf", ""),
+        "valor":         respostas.get("r$valor das parcelas", "0"),
+        "vencimento":    respostas.get("data do primeiro  pagamento", ""),
         "fim_pagamento": respostas.get("data último pagamento", "")
     })

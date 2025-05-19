@@ -128,15 +128,14 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
         else:
             print("❌ Falha ao enviar mensagem:", r.text)
 
-
 # ─────── Asaas ───────
 async def criar_assinatura_asaas(data: dict):
     """
-    data deve ter as chaves:
-      - nome, email, telefone, cpf,
-      - valor (string "R$ 123,45"),
-      - vencimento ("dd/mm/YYYY"),
-      - fim_pagamento ("dd/mm/YYYY")
+    data requer:
+      nome, email, telefone, cpf,
+      valor (ex.: "R$ 123,45"),
+      vencimento ("dd/mm/YYYY"),
+      fim_pagamento ("dd/mm/YYYY")
     """
     headers = {
         "Content-Type": "application/json",
@@ -144,37 +143,59 @@ async def criar_assinatura_asaas(data: dict):
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
-        # 1) Cria cliente (sempre retorna um ID)
-        customer_payload = {
-            "name": data["nome"],
-            "email": data["email"],
-            "mobilePhone": limpar_telefone(data["telefone"]),
-            "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
-        }
-        r = await client.post(
-            f"{settings.ASAAS_BASE}/customers", json=customer_payload, headers=headers
+
+        # 1) ────── BUSCA ou CRIA o cliente ────────────────────────────
+        #    usamos o filtro por email para evitar duplicar clientes
+        r = await client.get(
+            f"{settings.ASAAS_BASE}/customers",
+            headers=headers,
+            params={"email": data["email"]},
         )
         r.raise_for_status()
-        customer_id = r.json()["id"]
+        clientes = r.json().get("data", [])
 
-        # 2) Verifica **todas** as assinaturas desse cliente (qualquer status)
-        subs = await client.get(
+        if clientes:
+            customer_id = clientes[0]["id"]
+        else:
+            customer_payload = {
+                "name": data["nome"],
+                "email": data["email"],
+                "mobilePhone": limpar_telefone(data["telefone"]),
+                "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
+            }
+            r = await client.post(
+                f"{settings.ASAAS_BASE}/customers",
+                json=customer_payload,
+                headers=headers,
+            )
+            r.raise_for_status()
+            customer_id = r.json()["id"]
+
+        # 2) ────── VERIFICA se já há assinatura ativa ────────────────
+        r = await client.get(
             f"{settings.ASAAS_BASE}/subscriptions",
-            params={"customer": customer_id},
             headers=headers,
+            params={"customer": customer_id, "status": "ACTIVE"},
         )
-        subs.raise_for_status()
-        if subs.json().get("data"):
-            print("⚠️ Já existe assinatura para este cliente, pulando criação")
-            return subs.json()["data"][0]
+        r.raise_for_status()
+        ativas = r.json().get("data", [])
 
-        # 3) Cria nova assinatura como “pergunte ao cliente”
+        if ativas:
+            print("ℹ️ Já existe assinatura ativa; não será criada outra.")
+            return ativas[0]          # devolve a assinatura existente
+
+        # 3) ────── CRIA assinatura “Pergunte ao cliente” ─────────────
         assinatura_payload = {
             "customer": customer_id,
             "billingType": "UNDEFINED",
             "cycle": "MONTHLY",
             "value": float(
-                data["valor"].replace("R$", "").replace(".", "").replace(",", ".").strip() or 0
+                data["valor"]
+                .replace("R$", "")
+                .replace(".", "")
+                .replace(",", ".")
+                .strip()
+                or 0
             ),
             "description": "Aulas de Inglês",
             "nextDueDate": formatar_data(data.get("vencimento", "")),
@@ -182,14 +203,18 @@ async def criar_assinatura_asaas(data: dict):
             "fine": {"value": 2, "type": "PERCENTAGE"},
             "interest": {"value": 1},
             "notificationDisabled": False,
+            # usa o email + data como externalReference para evitar duplicação
+            "externalReference": f"{data['email']}-{data.get('vencimento','')}",
         }
-        assinatura = await client.post(
+
+        r = await client.post(
             f"{settings.ASAAS_BASE}/subscriptions",
             json=assinatura_payload,
             headers=headers,
         )
-        if assinatura.status_code != 200:
-            print("❌ Erro ao criar assinatura:", assinatura.text)
-        assinatura.raise_for_status()
+        if r.status_code != 200:
+            print("❌ Erro ao criar assinatura:", r.text)
+        r.raise_for_status()
         print("✅ Assinatura criada com sucesso")
-        return assinatura.json()
+        return r.json()
+
