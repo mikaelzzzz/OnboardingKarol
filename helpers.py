@@ -1,6 +1,6 @@
-# helpers.py
-# Versão consolidada sem duplicidades e com preenchimento automático
-# das selects “Plano” e “Tempo de contrato”
+# ~/Downloads/OnboardingKarol/helpers.py
+# Versão 2025-06-05 — revisada: upsert idempotente, selects preenchidas,
+# datas normalizadas, sem funções faltantes.
 
 import re
 from datetime import datetime
@@ -9,13 +9,13 @@ from typing import Dict, List, Optional
 import httpx
 from pydantic_settings import BaseSettings
 
-# ──────────────────────────── SETTINGS ──────────────────────────────
+# ───────────────────────────── SETTINGS ─────────────────────────────
 class Settings(BaseSettings):
     NOTION_TOKEN: str
     NOTION_DB_ID: str
     ZAPI_INSTANCE_ID: str
     ZAPI_TOKEN: str
-    ZAPI_SECURITY_TOKEN: str = ""
+    ZAPI_SECURITY_TOKEN: str | None = ""
     ASAAS_API_KEY: str
     ASAAS_BASE: str = "https://api.asaas.com/v3"
 
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# ──────────────────────────── MAPAS SELECT ──────────────────────────
+# ─────────────────────────── MAPAS DE SELECT ────────────────────────
 PLANOS: Dict[str, str] = {
     "flexge": "Flexge",
     "português": "Português",
@@ -33,14 +33,10 @@ PLANOS: Dict[str, str] = {
     "light": "Light",
     "conversação com nativos + flexge": "Conversação com nativos + Flexge",
 }
-
-DURACOES: Dict[str, str] = {
-    "anual": "anual",
-    "semestral": "semestral",
-}
+DURACOES: Dict[str, str] = {"anual": "anual", "semestral": "semestral"}
 
 
-def map_plano(raw: str) -> Optional[str]:
+def map_plano(raw: str | None) -> Optional[str]:
     raw = (raw or "").strip().lower()
     for chave, nome in PLANOS.items():
         if chave in raw:
@@ -48,7 +44,7 @@ def map_plano(raw: str) -> Optional[str]:
     return None
 
 
-def map_duracao(raw: str) -> Optional[str]:
+def map_duracao(raw: str | None) -> Optional[str]:
     raw = (raw or "").strip().lower()
     for chave, nome in DURACOES.items():
         if chave in raw:
@@ -56,25 +52,25 @@ def map_duracao(raw: str) -> Optional[str]:
     return None
 
 
-# ─────────────────────── HELPERS DE FORMATAÇÃO ──────────────────────
+# ───────────────────── FUNÇÕES DE FORMATAÇÃO ───────────────────────
 def limpar_telefone(numero: str) -> str:
-    """Mantém apenas os últimos 11 dígitos (DDD + celular)."""
+    """Remove caracteres não numéricos e devolve os 11 últimos dígitos (DDD+cel)."""
     return re.sub(r"\D", "", numero)[-11:]
 
 
-def formatar_data(data: str) -> str:
+def formatar_data(data: str | None) -> str:
     """
     Converte 'dd/mm/YYYY' → 'YYYY-MM-DD'.
-    Se falhar, retorna string vazia (omitida pelo Notion/Asaas).
+    Retorna string vazia se `data` for falsy ou inválida.
     """
     try:
-        return datetime.strptime(data.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
-    except Exception:
+        return datetime.strptime((data or "").strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
+    except ValueError:
         return ""
 
 
 # ───────────────────────────── NOTION ───────────────────────────────
-def get_headers_notion() -> dict:
+def _headers_notion() -> dict:
     return {
         "Authorization": f"Bearer {settings.NOTION_TOKEN}",
         "Notion-Version": "2022-06-28",
@@ -83,16 +79,15 @@ def get_headers_notion() -> dict:
 
 
 async def notion_search_by_email(email: str) -> List[dict]:
-    """Retorna no máximo 1 página que tenha o e-mail exato."""
-    email = email.strip().lower()
+    """Busca página pelo e-mail exato (máximo 1 resultado)."""
     payload = {
-        "filter": {"property": "Email", "email": {"equals": email}},
+        "filter": {"property": "Email", "email": {"equals": email.strip().lower()}},
         "page_size": 1,
     }
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID}/query",
-            headers=get_headers_notion(),
+            headers=_headers_notion(),
             json=payload,
         )
         r.raise_for_status()
@@ -100,10 +95,7 @@ async def notion_search_by_email(email: str) -> List[dict]:
 
 
 async def notion_create_page(data: dict) -> None:
-    """
-    Cria um novo aluno. `data` deve conter:
-      name, email, telefone, cpf, pacote, duracao, inicio, fim, endereco
-    """
+    """Cria novo registro de aluno."""
     payload = {
         "parent": {"database_id": settings.NOTION_DB_ID},
         "properties": {
@@ -113,35 +105,30 @@ async def notion_create_page(data: dict) -> None:
             "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
             "Plano": {"select": {"name": data["pacote"] or "—"}},
             "Tempo de contrato": {"select": {"name": data.get("duracao") or "—"}},
-            "Inicio do contrato": {
-                "date": {"start": formatar_data(data.get("inicio", ""))}
-            },
-            "Fim do contrato": {
-                "date": {"start": formatar_data(data.get("fim", ""))}
-            },
+            "Inicio do contrato": {"date": {"start": data["inicio"]}},
+            "Fim do contrato": {"date": {"start": data["fim"]}},
             "Endereço Completo": {
                 "rich_text": [{"text": {"content": data.get("endereco", "")}}]
             },
         },
     }
-
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             "https://api.notion.com/v1/pages",
-            headers=get_headers_notion(),
+            headers=_headers_notion(),
             json=payload,
         )
         if r.status_code != 200:
-            print("❌ Notion payload rejeitado:", r.text)
+            print("❌ Notion create error:", r.text)
         r.raise_for_status()
 
 
 async def notion_update_page(page_id: str, props: dict) -> None:
-    """Atualiza apenas as propriedades passadas em `props`."""
+    """Atualiza somente as props fornecidas."""
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.patch(
             f"https://api.notion.com/v1/pages/{page_id}",
-            headers=get_headers_notion(),
+            headers=_headers_notion(),
             json={"properties": props},
         )
         if r.status_code != 200:
@@ -151,40 +138,25 @@ async def notion_update_page(page_id: str, props: dict) -> None:
 
 async def upsert_student(data: dict) -> str:
     """
-    Se o aluno existir (pelo e-mail), atualiza;
-    senão, cria e retorna o page_id (ou string vazia).
+    Atualiza registro existente (mesmo e-mail) ou cria um novo.
+    Retorna o page_id do registro encontrado/criado.
     """
-    resultados = await notion_search_by_email(data["email"])
-    if resultados:
-        page_id = resultados[0]["id"]
+    resultado = await notion_search_by_email(data["email"])
+    if resultado:
+        page_id = resultado[0]["id"]
         props = {
-            "Student Name": {
-                "title": [{"text": {"content": data["name"]}}],
-            },
-            "Telefone": {
-                "rich_text": [{"text": {"content": data["telefone"]}}],
-            },
-            "CPF": {
-                "rich_text": [{"text": {"content": data["cpf"]}}],
-            },
-            "Plano": {
-                "select": {"name": data["pacote"] or "—"},
-            },
-            "Tempo de contrato": {
-                "select": {"name": data.get("duracao") or "—"},
-            },
-            "Inicio do contrato": {
-                "date": {"start": formatar_data(data.get("inicio", ""))},
-            },
-            "Fim do contrato": {
-                "date": {"start": formatar_data(data.get("fim", ""))},
-            },
+            "Student Name": {"title": [{"text": {"content": data["name"]}}]},
+            "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
+            "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
+            "Plano": {"select": {"name": data["pacote"] or "—"}},
+            "Tempo de contrato": {"select": {"name": data.get("duracao") or "—"}},
+            "Inicio do contrato": {"date": {"start": data["inicio"]}},
+            "Fim do contrato": {"date": {"start": data["fim"]}},
             "Endereço Completo": {
-                "rich_text": [{"text": {"content": data.get("endereco", "")}}],
+                "rich_text": [{"text": {"content": data.get("endereco", "")}}]
             },
         }
-        # remove campos vazios
-        props = {k: v for k, v in props.items() if v}
+        props = {k: v for k, v in props.items() if v}  # remove vazios
         await notion_update_page(page_id, props)
         return page_id
     else:
@@ -192,26 +164,23 @@ async def upsert_student(data: dict) -> str:
         return ""
 
 
-# ──────────────────────── Z-API / WHATSAPP ──────────────────────────
+# ─────────────────────────── Z-API / WHATSAPP ───────────────────────
 async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool) -> None:
     numero = limpar_telefone(phone)
     if len(numero) != 11:
-        print(f"⚠️ Telefone inválido após limpeza: {numero}")
+        print(f"⚠️ Telefone inválido: {numero}")
         return
 
     if novo:
         msg = (
             f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
-            "Tenho certeza de que será uma experiência incrível para você!\n"
-            "Sou Marcello, seu ponto de contato para tudo o que precisar.\n\n"
-            f"Vi que seu e-mail cadastrado é {email}. Você deseja usá-lo para tudo "
-            "ou prefere trocar?"
+            "Sou Marcello, seu ponto de contato para qualquer dúvida.\n"
+            f"Seu e-mail cadastrado é {email}. Prefere usar outro?"
         )
     else:
         msg = (
-            f"Olá {name}, parabéns pela escolha de continuar seus estudos. "
-            "Tenho certeza de que a continuação dessa jornada será incrível. "
-            "Se precisar de algo, pode contar com a gente! Rumo à fluência!"
+            f"Olá {name}, obrigado por renovar conosco! "
+            "Qualquer coisa é só chamar. Rumo à fluência! 🚀"
         )
 
     payload = {"phone": numero, "message": msg}
@@ -223,99 +192,75 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool) -
         "Content-Type": "application/json",
         "Client-Token": settings.ZAPI_SECURITY_TOKEN,
     }
-
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(url, headers=headers, json=payload)
         if r.status_code == 200:
-            print("✅ Mensagem enviada com sucesso")
+            print("✅ WhatsApp enviado")
         else:
-            print("❌ Falha ao enviar mensagem:", r.text)
+            print("❌ WhatsApp erro:", r.text)
 
 
 # ───────────────────────────── ASAAS ────────────────────────────────
 async def criar_assinatura_asaas(data: dict):
     """
-    `data` requer:
-      nome, email, telefone, cpf,
-      valor (ex.: "R$ 123,45"),
-      vencimento ("dd/mm/YYYY"),
-      fim_pagamento ("dd/mm/YYYY")
+    Cria assinatura mensal no Asaas se não existir uma ativa.
+    Campos obrigatórios em `data`:
+      nome, email, telefone, cpf, valor, vencimento, fim_pagamento
     """
-    headers = {
-        "Content-Type": "application/json",
-        "access-token": settings.ASAAS_API_KEY,
-    }
+    headers = {"Content-Type": "application/json", "access-token": settings.ASAAS_API_KEY}
 
     async with httpx.AsyncClient(timeout=10) as client:
-        # 1) ─── BUSCA ou CRIA cliente ────────────────────────────────
+        # 1) cliente
         r = await client.get(
-            f"{settings.ASAAS_BASE}/customers",
-            headers=headers,
-            params={"email": data["email"]},
+            f"{settings.ASAAS_BASE}/customers", headers=headers, params={"email": data["email"]}
         )
         r.raise_for_status()
         clientes = r.json().get("data", [])
-
         if clientes:
             customer_id = clientes[0]["id"]
         else:
-            customer_payload = {
+            payload = {
                 "name": data["nome"],
                 "email": data["email"],
                 "mobilePhone": limpar_telefone(data["telefone"]),
                 "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
             }
-            r = await client.post(
-                f"{settings.ASAAS_BASE}/customers",
-                json=customer_payload,
-                headers=headers,
-            )
+            r = await client.post(f"{settings.ASAAS_BASE}/customers", headers=headers, json=payload)
             r.raise_for_status()
             customer_id = r.json()["id"]
 
-        # 2) ─── VERIFICA assinatura ativa ───────────────────────────
+        # 2) assinatura ativa?
         r = await client.get(
             f"{settings.ASAAS_BASE}/subscriptions",
             headers=headers,
             params={"customer": customer_id, "status": "ACTIVE"},
         )
         r.raise_for_status()
-        ativas = r.json().get("data", [])
+        if r.json().get("data"):
+            print("ℹ️ Assinatura já existe — nada a criar.")
+            return r.json()["data"][0]
 
-        if ativas:
-            print("ℹ️ Já existe assinatura ativa; não será criada outra.")
-            return ativas[0]
-
-        # 3) ─── CRIA assinatura ─────────────────────────────────────
-        assinatura_payload = {
+        # 3) cria assinatura
+        assinatura = {
             "customer": customer_id,
-            "billingType": "UNDEFINED",  # definido depois pelo cliente
+            "billingType": "UNDEFINED",
             "cycle": "MONTHLY",
             "value": float(
-                data["valor"]
-                .replace("R$", "")
-                .replace(".", "")
-                .replace(",", ".")
-                .strip()
-                or 0
+                data["valor"].replace("R$", "").replace(".", "").replace(",", ".").strip() or 0
             ),
             "description": "Aulas de Inglês",
-            "nextDueDate": formatar_data(data.get("vencimento", "")),
-            "endDate": formatar_data(data.get("fim_pagamento", "")),
+            "nextDueDate": formatar_data(data.get("vencimento")),
+            "endDate": formatar_data(data.get("fim_pagamento")),
             "fine": {"value": 2, "type": "PERCENTAGE"},
             "interest": {"value": 1},
             "notificationDisabled": False,
-            # evita duplicação
-            "externalReference": f"{data['email']}-{data.get('vencimento', '')}",
+            "externalReference": f"{data['email']}-{data.get('vencimento','')}",
         }
-
         r = await client.post(
-            f"{settings.ASAAS_BASE}/subscriptions",
-            json=assinatura_payload,
-            headers=headers,
+            f"{settings.ASAAS_BASE}/subscriptions", headers=headers, json=assinatura
         )
         if r.status_code != 200:
-            print("❌ Erro ao criar assinatura:", r.text)
+            print("❌ Asaas erro:", r.text)
         r.raise_for_status()
-        print("✅ Assinatura criada com sucesso")
+        print("✅ Assinatura criada")
         return r.json()
