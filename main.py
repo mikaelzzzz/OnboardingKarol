@@ -3,13 +3,17 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
+
 from helpers import (
-    notion_search_by_email,
-    notion_create_page,
+    notion_search_by_email,   
+    upsert_student,         
     send_whatsapp_message,
     criar_assinatura_asaas,
+    map_plano,          
+    map_duracao,            
 )
 
+app = FastAPI()
 app = FastAPI()
 
 @app.get("/")
