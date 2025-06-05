@@ -1,11 +1,15 @@
-# ~/Downloads/OnboardingKarol/helpers.py
+# helpers.py
+# Versão consolidada sem duplicidades e com preenchimento automático
+# das selects “Plano” e “Tempo de contrato”
 
 import re
-import httpx
 from datetime import datetime
+from typing import Dict, List, Optional
+
+import httpx
 from pydantic_settings import BaseSettings
 
-
+# ──────────────────────────── SETTINGS ──────────────────────────────
 class Settings(BaseSettings):
     NOTION_TOKEN: str
     NOTION_DB_ID: str
@@ -21,17 +25,47 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# ──────────────────────────── MAPAS SELECT ──────────────────────────
+PLANOS: Dict[str, str] = {
+    "flexge": "Flexge",
+    "português": "Português",
+    "vip": "VIP",
+    "light": "Light",
+    "conversação com nativos + flexge": "Conversação com nativos + Flexge",
+}
 
-# ─────── Helpers de formatação ───────
+DURACOES: Dict[str, str] = {
+    "anual": "anual",
+    "semestral": "semestral",
+}
+
+
+def map_plano(raw: str) -> Optional[str]:
+    raw = (raw or "").strip().lower()
+    for chave, nome in PLANOS.items():
+        if chave in raw:
+            return nome
+    return None
+
+
+def map_duracao(raw: str) -> Optional[str]:
+    raw = (raw or "").strip().lower()
+    for chave, nome in DURACOES.items():
+        if chave in raw:
+            return nome
+    return None
+
+
+# ─────────────────────── HELPERS DE FORMATAÇÃO ──────────────────────
 def limpar_telefone(numero: str) -> str:
-    """Mantém apenas últimos 11 dígitos (DDD+celular)."""
+    """Mantém apenas os últimos 11 dígitos (DDD + celular)."""
     return re.sub(r"\D", "", numero)[-11:]
 
 
 def formatar_data(data: str) -> str:
     """
     Converte 'dd/mm/YYYY' → 'YYYY-MM-DD'.
-    Se falhar, retorna string vazia (omitida pelo Notion).
+    Se falhar, retorna string vazia (omitida pelo Notion/Asaas).
     """
     try:
         return datetime.strptime(data.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
@@ -39,8 +73,8 @@ def formatar_data(data: str) -> str:
         return ""
 
 
-# ─────── Notion ───────
-def get_headers_notion():
+# ───────────────────────────── NOTION ───────────────────────────────
+def get_headers_notion() -> dict:
     return {
         "Authorization": f"Bearer {settings.NOTION_TOKEN}",
         "Notion-Version": "2022-06-28",
@@ -48,9 +82,14 @@ def get_headers_notion():
     }
 
 
-async def notion_search_by_email(email: str):
+async def notion_search_by_email(email: str) -> List[dict]:
+    """Retorna no máximo 1 página que tenha o e-mail exato."""
+    email = email.strip().lower()
+    payload = {
+        "filter": {"property": "Email", "email": {"equals": email}},
+        "page_size": 1,
+    }
     async with httpx.AsyncClient(timeout=10) as client:
-        payload = {"filter": {"property": "Email", "email": {"equals": email}}}
         r = await client.post(
             f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID}/query",
             headers=get_headers_notion(),
@@ -60,10 +99,10 @@ async def notion_search_by_email(email: str):
         return r.json().get("results", [])
 
 
-async def notion_create_page(data: dict):
+async def notion_create_page(data: dict) -> None:
     """
-    data deve ter as chaves:
-      - name, email, telefone, cpf, pacote, inicio, fim, endereco
+    Cria um novo aluno. `data` deve conter:
+      name, email, telefone, cpf, pacote, duracao, inicio, fim, endereco
     """
     payload = {
         "parent": {"database_id": settings.NOTION_DB_ID},
@@ -73,9 +112,16 @@ async def notion_create_page(data: dict):
             "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
             "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
             "Plano": {"select": {"name": data["pacote"] or "—"}},
-            "Inicio do contrato": {"date": {"start": formatar_data(data.get("inicio", ""))}},
-            "Fim do contrato": {"date": {"start": formatar_data(data.get("fim", ""))}},
-            "Endereço Completo": {"rich_text": [{"text": {"content": data.get("endereco", "")}}]},
+            "Tempo de contrato": {"select": {"name": data.get("duracao") or "—"}},
+            "Inicio do contrato": {
+                "date": {"start": formatar_data(data.get("inicio", ""))}
+            },
+            "Fim do contrato": {
+                "date": {"start": formatar_data(data.get("fim", ""))}
+            },
+            "Endereço Completo": {
+                "rich_text": [{"text": {"content": data.get("endereco", "")}}]
+            },
         },
     }
 
@@ -90,8 +136,64 @@ async def notion_create_page(data: dict):
         r.raise_for_status()
 
 
-# ─────── Z-API / WhatsApp ───────
-async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
+async def notion_update_page(page_id: str, props: dict) -> None:
+    """Atualiza apenas as propriedades passadas em `props`."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.patch(
+            f"https://api.notion.com/v1/pages/{page_id}",
+            headers=get_headers_notion(),
+            json={"properties": props},
+        )
+        if r.status_code != 200:
+            print("❌ Notion update error:", r.text)
+        r.raise_for_status()
+
+
+async def upsert_student(data: dict) -> str:
+    """
+    Se o aluno existir (pelo e-mail), atualiza;
+    senão, cria e retorna o page_id (ou string vazia).
+    """
+    resultados = await notion_search_by_email(data["email"])
+    if resultados:
+        page_id = resultados[0]["id"]
+        props = {
+            "Student Name": {
+                "title": [{"text": {"content": data["name"]}}],
+            },
+            "Telefone": {
+                "rich_text": [{"text": {"content": data["telefone"]}}],
+            },
+            "CPF": {
+                "rich_text": [{"text": {"content": data["cpf"]}}],
+            },
+            "Plano": {
+                "select": {"name": data["pacote"] or "—"},
+            },
+            "Tempo de contrato": {
+                "select": {"name": data.get("duracao") or "—"},
+            },
+            "Inicio do contrato": {
+                "date": {"start": formatar_data(data.get("inicio", ""))},
+            },
+            "Fim do contrato": {
+                "date": {"start": formatar_data(data.get("fim", ""))},
+            },
+            "Endereço Completo": {
+                "rich_text": [{"text": {"content": data.get("endereco", "")}}],
+            },
+        }
+        # remove campos vazios
+        props = {k: v for k, v in props.items() if v}
+        await notion_update_page(page_id, props)
+        return page_id
+    else:
+        await notion_create_page(data)
+        return ""
+
+
+# ──────────────────────── Z-API / WHATSAPP ──────────────────────────
+async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool) -> None:
     numero = limpar_telefone(phone)
     if len(numero) != 11:
         print(f"⚠️ Telefone inválido após limpeza: {numero}")
@@ -102,7 +204,8 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
             f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
             "Tenho certeza de que será uma experiência incrível para você!\n"
             "Sou Marcello, seu ponto de contato para tudo o que precisar.\n\n"
-            f"Vi que seu e-mail cadastrado é {email}. Você deseja usá-lo para tudo ou prefere trocar?"
+            f"Vi que seu e-mail cadastrado é {email}. Você deseja usá-lo para tudo "
+            "ou prefere trocar?"
         )
     else:
         msg = (
@@ -128,10 +231,11 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool):
         else:
             print("❌ Falha ao enviar mensagem:", r.text)
 
-# ─────── Asaas ───────
+
+# ───────────────────────────── ASAAS ────────────────────────────────
 async def criar_assinatura_asaas(data: dict):
     """
-    data requer:
+    `data` requer:
       nome, email, telefone, cpf,
       valor (ex.: "R$ 123,45"),
       vencimento ("dd/mm/YYYY"),
@@ -143,9 +247,7 @@ async def criar_assinatura_asaas(data: dict):
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
-
-        # 1) ────── BUSCA ou CRIA o cliente ────────────────────────────
-        #    usamos o filtro por email para evitar duplicar clientes
+        # 1) ─── BUSCA ou CRIA cliente ────────────────────────────────
         r = await client.get(
             f"{settings.ASAAS_BASE}/customers",
             headers=headers,
@@ -171,7 +273,7 @@ async def criar_assinatura_asaas(data: dict):
             r.raise_for_status()
             customer_id = r.json()["id"]
 
-        # 2) ────── VERIFICA se já há assinatura ativa ────────────────
+        # 2) ─── VERIFICA assinatura ativa ───────────────────────────
         r = await client.get(
             f"{settings.ASAAS_BASE}/subscriptions",
             headers=headers,
@@ -182,12 +284,12 @@ async def criar_assinatura_asaas(data: dict):
 
         if ativas:
             print("ℹ️ Já existe assinatura ativa; não será criada outra.")
-            return ativas[0]          # devolve a assinatura existente
+            return ativas[0]
 
-        # 3) ────── CRIA assinatura “Pergunte ao cliente” ─────────────
+        # 3) ─── CRIA assinatura ─────────────────────────────────────
         assinatura_payload = {
             "customer": customer_id,
-            "billingType": "UNDEFINED",
+            "billingType": "UNDEFINED",  # definido depois pelo cliente
             "cycle": "MONTHLY",
             "value": float(
                 data["valor"]
@@ -203,8 +305,8 @@ async def criar_assinatura_asaas(data: dict):
             "fine": {"value": 2, "type": "PERCENTAGE"},
             "interest": {"value": 1},
             "notificationDisabled": False,
-            # usa o email + data como externalReference para evitar duplicação
-            "externalReference": f"{data['email']}-{data.get('vencimento','')}",
+            # evita duplicação
+            "externalReference": f"{data['email']}-{data.get('vencimento', '')}",
         }
 
         r = await client.post(
@@ -217,4 +319,3 @@ async def criar_assinatura_asaas(data: dict):
         r.raise_for_status()
         print("✅ Assinatura criada com sucesso")
         return r.json()
-
