@@ -36,44 +36,43 @@ async def zapsign_webhook(payload: WebhookPayload):
     if payload.status != "signed":
         return
 
-    # ── dados principais ───────────────────────────────────────────────
-    email = payload.signer_who_signed.email.strip().lower()  # ← normaliza
+    email = payload.signer_who_signed.email.strip().lower()
     name  = payload.signer_who_signed.name.strip()
     phone = f"{payload.signer_who_signed.phone_country}{payload.signer_who_signed.phone_number}"
 
-    # transforma respostas do Zapsign em dicionário minúsculo
     respostas = {a.variable.lower(): a.value for a in payload.answers}
 
-    # ── aluno existe? ──────────────────────────────────────────────────
+    # procura aluno
     alunos = await notion_search_by_email(email)
-    aluno_existe = len(alunos) > 0          # ← uso explícito de tamanho
-    print(f"[Notion] encontrados: {len(alunos)} páginas para {email}")
+    page_id = alunos[0]["id"] if alunos else None
 
-    # ── WhatsApp (mensagem certa) ──────────────────────────────────────
-    await send_whatsapp_message(name, email, phone, novo=not aluno_existe)
+    # monta propriedades
+    props = {
+        "name":     name,
+        "email":    email,
+        "telefone": phone,
+        "cpf":      respostas.get("cpf", ""),
+        "plano":    map_plano(respostas.get("tipo do pacote", "")),
+        "duracao":  map_duracao(respostas.get("tempo de contrato", "")),
+        "inicio":   parse_date(respostas.get("data do primeiro  pagamento", "")),
+        "fim":      parse_date(respostas.get("data último pagamento", "")),
+        "endereco": respostas.get("endereço completo", ""),
+    }
 
-    # ── cria página só se for novo ─────────────────────────────────────
-    if not aluno_existe:
-        await notion_create_page({
-            "name":      name,
-            "email":     email,
-            "telefone":  phone,
-            "cpf":       respostas.get("cpf", ""),
-            "pacote":    respostas.get(
-                "tipo do pacote, escrever “vip” ou “light” ou “flexge + conversação com nativos", ""
-            ),
-            "inicio":    respostas.get("data do primeiro  pagamento", ""),
-            "fim":       respostas.get("data último pagamento", ""),
-            "endereco":  respostas.get("endereço completo", ""),
-        })
+    # WhatsApp
+    await send_whatsapp_message(name, email, phone, novo=page_id is None)
 
-    # ── cria / obtém cliente & assinatura ─────────────────────────────
+    # upsert Notion
+    await upsert_student(props, page_id)
+
+    # Asaas (mantém como estava)
     await criar_assinatura_asaas({
         "nome":          name,
         "email":         email,
         "telefone":      phone,
-        "cpf":           respostas.get("cpf", ""),
+        "cpf":           props["cpf"],
         "valor":         respostas.get("r$valor das parcelas", "0"),
-        "vencimento":    respostas.get("data do primeiro  pagamento", ""),
-        "fim_pagamento": respostas.get("data último pagamento", "")
+        "vencimento":    props["inicio"],
+        "fim_pagamento": props["fim"]
     })
+
