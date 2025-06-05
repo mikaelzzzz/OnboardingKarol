@@ -1,9 +1,10 @@
 # ~/Downloads/OnboardingKarol/helpers.py
-# Versão 2025-06-05 b — upsert idempotente, selects corretas,
-# datas normalizadas e WhatsApp sem duplicar.
+# Versão 2025-06-05 d — agora também grava “Data de Nascimento”,
+# mantém upsert idêntico, datas ISO, WhatsApp sem duplicados, plano robusto.
 
 import re
 import time
+import unicodedata
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -26,36 +27,45 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# ──────────────────────── NORMALIZAÇÃO AUXILIAR ─────────────────────
+def _norm(text: str | None) -> str:
+    """minúsculas sem acento para buscas flexíveis."""
+    if not text:
+        return ""
+    txt = unicodedata.normalize("NFD", text)
+    return "".join(c for c in txt if unicodedata.category(c) != "Mn").lower().strip()
+
+
 # ─────────────────────────── MAPAS DE SELECT ────────────────────────
 PLANOS: Dict[str, str] = {
-    "flexge": "Flexge",
-    "português": "Português",
     "vip": "VIP",
     "light": "Light",
-    "conversação com nativos + flexge": "Conversação com nativos + Flexge",
+    "flexge": "Flexge",
+    "flexge + conversacao": "Conversacao com nativos + Flexge",
+    "conversacao com nativos + flexge": "Conversacao com nativos + Flexge",
 }
 DURACOES: Dict[str, str] = {"anual": "anual", "semestral": "semestral"}
 
 
 def map_plano(raw: str | None) -> Optional[str]:
-    raw = (raw or "").strip().lower()
-    for chave, nome in PLANOS.items():
-        if chave in raw:
+    chave = _norm(raw)
+    for alias, nome in PLANOS.items():
+        if alias in chave:
             return nome
     return None
 
 
 def map_duracao(raw: str | None) -> Optional[str]:
-    raw = (raw or "").strip().lower()
-    for chave, nome in DURACOES.items():
-        if chave in raw:
+    chave = _norm(raw)
+    for alias, nome in DURACOES.items():
+        if alias in chave:
             return nome
     return None
 
 
 # ───────────────────── FUNÇÕES DE FORMATAÇÃO ───────────────────────
 def limpar_telefone(numero: str) -> str:
-    """Remove não numéricos e devolve os 11 últimos dígitos (DDD+cel)."""
+    """Remove não numéricos e devolve 11 últimos dígitos (DDD+cel)."""
     return re.sub(r"\D", "", numero)[-11:]
 
 
@@ -91,26 +101,40 @@ async def notion_search_by_email(email: str) -> List[dict]:
         return r.json().get("results", [])
 
 
-async def notion_create_page(data: dict) -> None:
-    """Cria novo registro de aluno."""
+def _build_props(data: dict) -> dict:
+    """Gera propriedades comuns (criar ou atualizar)."""
     props = {
         "Student Name": {"title": [{"text": {"content": data["name"]}}]},
-        "Email": {"email": data["email"]},
-        "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
-        "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
-        "Plano": {"select": {"name": data["pacote"] or "—"}},
+        "Telefone":     {"rich_text": [{"text": {"content": data["telefone"]}}]},
+        "CPF":          {"rich_text": [{"text": {"content": data["cpf"]}}]},
+        "Plano":        {"select":   {"name": data["pacote"] or "—"}},
         "Inicio do contrato": {"date": {"start": data["inicio"]}},
-        "Fim do contrato": {"date": {"start": data["fim"]}},
-        "Endereço Completo": {
-            "rich_text": [{"text": {"content": data.get("endereco", "")}}]
+        "Fim do contrato":    {"date": {"start": data["fim"]}},
+        "Endereço Completo":  {"rich_text": [{"text": {"content": data.get("endereco", "")}}]},
+        # Data de nascimento só se presente
+        **(
+            {"Data de Nascimento": {"date": {"start": data["nascimento"]}}}
+            if data.get("nascimento")
+            else {}
+        ),
+        # Tempo de contrato (status) só se presente
+        **(
+            {"Tempo de contrato": {"status": {"name": data["duracao"]}}}
+            if data.get("duracao")
+            else {}
+        ),
+    }
+    return {k: v for k, v in props.items() if v}  # remove vazios/None
+
+
+async def notion_create_page(data: dict) -> None:
+    payload = {
+        "parent": {"database_id": settings.NOTION_DB_ID},
+        "properties": {
+            "Email": {"email": data["email"]},
+            **_build_props(data),
         },
     }
-    # inclui Tempo de contrato só se existir valor válido
-    if data.get("duracao"):
-        props["Tempo de contrato"] = {"status": {"name": data["duracao"]}}
-
-    payload = {"parent": {"database_id": settings.NOTION_DB_ID}, "properties": props}
-
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post("https://api.notion.com/v1/pages", headers=_headers_notion(), json=payload)
         if r.status_code != 200:
@@ -118,12 +142,12 @@ async def notion_create_page(data: dict) -> None:
         r.raise_for_status()
 
 
-async def notion_update_page(page_id: str, props: dict) -> None:
+async def notion_update_page(page_id: str, data: dict) -> None:
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.patch(
             f"https://api.notion.com/v1/pages/{page_id}",
             headers=_headers_notion(),
-            json={"properties": props},
+            json={"properties": _build_props(data)},
         )
         if r.status_code != 200:
             print("❌ Notion update error:", r.text)
@@ -131,44 +155,24 @@ async def notion_update_page(page_id: str, props: dict) -> None:
 
 
 async def upsert_student(data: dict) -> str:
-    """Atualiza se existe; senão cria. Retorna page_id (ou '')."""
     resultado = await notion_search_by_email(data["email"])
     if resultado:
         page_id = resultado[0]["id"]
-        props = {
-            "Student Name": {"title": [{"text": {"content": data["name"]}}]},
-            "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
-            "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
-            "Plano": {"select": {"name": data["pacote"] or "—"}},
-            "Inicio do contrato": {"date": {"start": data["inicio"]}},
-            "Fim do contrato": {"date": {"start": data["fim"]}},
-            "Endereço Completo": {
-                "rich_text": [{"text": {"content": data.get("endereco", "")}}]
-            },
-        }
-        if data.get("duracao"):
-            props["Tempo de contrato"] = {"status": {"name": data["duracao"]}}
-        props = {k: v for k, v in props.items() if v}  # remove vazios
-        await notion_update_page(page_id, props)
+        await notion_update_page(page_id, data)
         return page_id
-    else:
-        await notion_create_page(data)
-        return ""
+    await notion_create_page(data)
+    return ""
 
 
 # ─────────── Anti-duplicação de WhatsApp (memória de 60 s) ───────────
-_MSG_CACHE: Dict[str, float] = {}  # chave = f"{numero}|{hash(msg)}" → timestamp
-_CACHE_TTL = 60  # segundos
+_MSG_CACHE: Dict[str, float] = {}
+_CACHE_TTL = 60
 
 
 def _can_send(numero: str, msg: str) -> bool:
-    """Permite enviar se não mandou a mesma mensagem nos últimos 60 s."""
     chave = f"{numero}|{hash(msg)}"
     now = time.time()
-    # limpa itens expirados
-    for k, ts in list(_MSG_CACHE.items()):
-        if now - ts > _CACHE_TTL:
-            _MSG_CACHE.pop(k, None)
+    _MSG_CACHE.update({k: v for k, v in _MSG_CACHE.items() if now - v <= _CACHE_TTL})
     if chave in _MSG_CACHE:
         return False
     _MSG_CACHE[chave] = now
@@ -218,9 +222,7 @@ async def criar_assinatura_asaas(data: dict):
     headers = {"Content-Type": "application/json", "access-token": settings.ASAAS_API_KEY}
     async with httpx.AsyncClient(timeout=10) as client:
         # cliente
-        r = await client.get(
-            f"{settings.ASAAS_BASE}/customers", headers=headers, params={"email": data["email"]}
-        )
+        r = await client.get(f"{settings.ASAAS_BASE}/customers", headers=headers, params={"email": data["email"]})
         r.raise_for_status()
         clientes = r.json().get("data", [])
         if clientes:
@@ -247,14 +249,11 @@ async def criar_assinatura_asaas(data: dict):
             print("ℹ️ Assinatura já existe — nada a criar.")
             return r.json()["data"][0]
 
-        # cria assinatura
         assinatura = {
             "customer": customer_id,
             "billingType": "UNDEFINED",
             "cycle": "MONTHLY",
-            "value": float(
-                data["valor"].replace("R$", "").replace(".", "").replace(",", ".").strip() or 0
-            ),
+            "value": float(data["valor"].replace("R$", "").replace(".", "").replace(",", ".").strip() or 0),
             "description": "Aulas de Inglês",
             "nextDueDate": formatar_data(data.get("vencimento")),
             "endDate": formatar_data(data.get("fim_pagamento")),
@@ -263,9 +262,7 @@ async def criar_assinatura_asaas(data: dict):
             "notificationDisabled": False,
             "externalReference": f"{data['email']}-{data.get('vencimento','')}",
         }
-        r = await client.post(
-            f"{settings.ASAAS_BASE}/subscriptions", headers=headers, json=assinatura
-        )
+        r = await client.post(f"{settings.ASAAS_BASE}/subscriptions", headers=headers, json=assinatura)
         if r.status_code != 200:
             print("❌ Asaas erro:", r.text)
         r.raise_for_status()
