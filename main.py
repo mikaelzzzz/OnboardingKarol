@@ -1,5 +1,6 @@
 # ~/Downloads/OnboardingKarol/main.py
-# Versão corrigida — sem duplicidade, com Plano/Tempo e datas normalizadas
+# Versão 2025-06-05 d — agora preenche Plano robusto, Tempo de contrato,
+# Data de Nascimento, evita duplicidades e normaliza datas.
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -16,7 +17,6 @@ from helpers import (
 )
 
 app = FastAPI()
-
 
 # ─────────────────────────── HEALTHCHECK ────────────────────────────
 @app.get("/")
@@ -53,29 +53,39 @@ async def zapsign_webhook(payload: WebhookPayload):
     # ── dados principais ────────────────────────────────────────────
     email = payload.signer_who_signed.email.strip().lower()
     name = payload.signer_who_signed.name.strip()
-    phone = (
-        f"{payload.signer_who_signed.phone_country}"
-        f"{payload.signer_who_signed.phone_number}"
-    )
+    phone = f"{payload.signer_who_signed.phone_country}{payload.signer_who_signed.phone_number}"
 
-    # respostas do ZapSign → dict em lowercase
+    # coloca respostas em dict minúsculo
     respostas = {a.variable.lower(): a.value for a in payload.answers}
 
+    # ── PLANOS & DURAÇÃO (captura flexível) ─────────────────────────
+    pacote_raw = (
+        next((v for k, v in respostas.items() if "tipo do pacote" in k), "")  # campo normal
+        or next((v for v in respostas.values() if map_plano(v)), "")          # valor detectado
+    )
+    duracao_raw = (
+        next((v for k, v in respostas.items() if "tempo de contrato" in k), "")
+        or next((v for v in respostas.values() if map_duracao(v)), "")
+    )
+
+    # ── DATA DE NASCIMENTO ──────────────────────────────────────────
+    nascimento_raw = respostas.get("data de nascimento", "")
+
     # ── aluno já existe? ────────────────────────────────────────────
-    alunos = await notion_search_by_email(email)
-    is_novo = len(alunos) == 0
+    is_novo = not (await notion_search_by_email(email))
 
     # ── monta propriedades para Notion / Asaas ──────────────────────
     props = {
-        "name": name,
-        "email": email,
-        "telefone": phone,
-        "cpf": respostas.get("cpf", ""),
-        "pacote": map_plano(respostas.get("tipo do pacote", "")),
-        "duracao": map_duracao(respostas.get("tempo de contrato", "")),
-        "inicio": formatar_data(respostas.get("data do primeiro  pagamento", "")),
-        "fim": formatar_data(respostas.get("data último pagamento", "")),
-        "endereco": respostas.get("endereço completo", ""),
+        "name":       name,
+        "email":      email,
+        "telefone":   phone,
+        "cpf":        respostas.get("cpf", ""),
+        "pacote":     map_plano(pacote_raw),
+        "duracao":    map_duracao(duracao_raw),
+        "inicio":     formatar_data(respostas.get("data do primeiro  pagamento", "")),
+        "fim":        formatar_data(respostas.get("data último pagamento", "")),
+        "nascimento": formatar_data(nascimento_raw),
+        "endereco":   respostas.get("endereço completo", ""),
     }
 
     # ── WhatsApp ────────────────────────────────────────────────────
@@ -87,12 +97,12 @@ async def zapsign_webhook(payload: WebhookPayload):
     # ── Asaas (cliente + assinatura idempotente) ───────────────────
     await criar_assinatura_asaas(
         {
-            "nome": name,
-            "email": email,
-            "telefone": phone,
-            "cpf": props["cpf"],
-            "valor": respostas.get("r$valor das parcelas", "0"),
-            "vencimento": props["inicio"],
+            "nome":          name,
+            "email":         email,
+            "telefone":      phone,
+            "cpf":           props["cpf"],
+            "valor":         respostas.get("r$valor das parcelas", "0"),
+            "vencimento":    props["inicio"],
             "fim_pagamento": props["fim"],
         }
     )
