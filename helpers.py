@@ -1,8 +1,9 @@
 # ~/Downloads/OnboardingKarol/helpers.py
-# Versão 2025-06-05 — revisada: upsert idempotente, selects preenchidas,
-# datas normalizadas, sem funções faltantes.
+# Versão 2025-06-05 b — upsert idempotente, selects corretas,
+# datas normalizadas e WhatsApp sem duplicar.
 
 import re
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -54,22 +55,19 @@ def map_duracao(raw: str | None) -> Optional[str]:
 
 # ───────────────────── FUNÇÕES DE FORMATAÇÃO ───────────────────────
 def limpar_telefone(numero: str) -> str:
-    """Remove caracteres não numéricos e devolve os 11 últimos dígitos (DDD+cel)."""
+    """Remove não numéricos e devolve os 11 últimos dígitos (DDD+cel)."""
     return re.sub(r"\D", "", numero)[-11:]
 
 
 def formatar_data(data: str | None) -> str:
-    """
-    Converte 'dd/mm/YYYY' → 'YYYY-MM-DD'.
-    Retorna string vazia se `data` for falsy ou inválida.
-    """
+    """Converte 'dd/mm/YYYY' → 'YYYY-MM-DD'. Retorna '' se inválido/vazio."""
     try:
         return datetime.strptime((data or "").strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
     except ValueError:
         return ""
 
 
-# ───────────────────────────── NOTION ───────────────────────────────
+# ──────────────────────────── NOTION ────────────────────────────────
 def _headers_notion() -> dict:
     return {
         "Authorization": f"Bearer {settings.NOTION_TOKEN}",
@@ -79,7 +77,6 @@ def _headers_notion() -> dict:
 
 
 async def notion_search_by_email(email: str) -> List[dict]:
-    """Busca página pelo e-mail exato (máximo 1 resultado)."""
     payload = {
         "filter": {"property": "Email", "email": {"equals": email.strip().lower()}},
         "page_size": 1,
@@ -96,35 +93,32 @@ async def notion_search_by_email(email: str) -> List[dict]:
 
 async def notion_create_page(data: dict) -> None:
     """Cria novo registro de aluno."""
-    payload = {
-        "parent": {"database_id": settings.NOTION_DB_ID},
-        "properties": {
-            "Student Name": {"title": [{"text": {"content": data["name"]}}]},
-            "Email": {"email": data["email"]},
-            "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
-            "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
-            "Plano": {"select": {"name": data["pacote"] or "—"}},
-            "Tempo de contrato": {"status": {"name": data.get("duracao") or "—"}},
-            "Inicio do contrato": {"date": {"start": data["inicio"]}},
-            "Fim do contrato": {"date": {"start": data["fim"]}},
-            "Endereço Completo": {
-                "rich_text": [{"text": {"content": data.get("endereco", "")}}]
-            },
+    props = {
+        "Student Name": {"title": [{"text": {"content": data["name"]}}]},
+        "Email": {"email": data["email"]},
+        "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
+        "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
+        "Plano": {"select": {"name": data["pacote"] or "—"}},
+        "Inicio do contrato": {"date": {"start": data["inicio"]}},
+        "Fim do contrato": {"date": {"start": data["fim"]}},
+        "Endereço Completo": {
+            "rich_text": [{"text": {"content": data.get("endereco", "")}}]
         },
     }
+    # inclui Tempo de contrato só se existir valor válido
+    if data.get("duracao"):
+        props["Tempo de contrato"] = {"status": {"name": data["duracao"]}}
+
+    payload = {"parent": {"database_id": settings.NOTION_DB_ID}, "properties": props}
+
     async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(
-            "https://api.notion.com/v1/pages",
-            headers=_headers_notion(),
-            json=payload,
-        )
+        r = await client.post("https://api.notion.com/v1/pages", headers=_headers_notion(), json=payload)
         if r.status_code != 200:
             print("❌ Notion create error:", r.text)
         r.raise_for_status()
 
 
 async def notion_update_page(page_id: str, props: dict) -> None:
-    """Atualiza somente as props fornecidas."""
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.patch(
             f"https://api.notion.com/v1/pages/{page_id}",
@@ -137,10 +131,7 @@ async def notion_update_page(page_id: str, props: dict) -> None:
 
 
 async def upsert_student(data: dict) -> str:
-    """
-    Atualiza registro existente (mesmo e-mail) ou cria um novo.
-    Retorna o page_id do registro encontrado/criado.
-    """
+    """Atualiza se existe; senão cria. Retorna page_id (ou '')."""
     resultado = await notion_search_by_email(data["email"])
     if resultado:
         page_id = resultado[0]["id"]
@@ -149,13 +140,14 @@ async def upsert_student(data: dict) -> str:
             "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
             "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
             "Plano": {"select": {"name": data["pacote"] or "—"}},
-            "Tempo de contrato": {"status": {"name": data.get("duracao") or "—"}},
             "Inicio do contrato": {"date": {"start": data["inicio"]}},
             "Fim do contrato": {"date": {"start": data["fim"]}},
             "Endereço Completo": {
                 "rich_text": [{"text": {"content": data.get("endereco", "")}}]
             },
         }
+        if data.get("duracao"):
+            props["Tempo de contrato"] = {"status": {"name": data["duracao"]}}
         props = {k: v for k, v in props.items() if v}  # remove vazios
         await notion_update_page(page_id, props)
         return page_id
@@ -164,34 +156,54 @@ async def upsert_student(data: dict) -> str:
         return ""
 
 
-# ─────────────────────────── Z-API / WHATSAPP ───────────────────────
+# ─────────── Anti-duplicação de WhatsApp (memória de 60 s) ───────────
+_MSG_CACHE: Dict[str, float] = {}  # chave = f"{numero}|{hash(msg)}" → timestamp
+_CACHE_TTL = 60  # segundos
+
+
+def _can_send(numero: str, msg: str) -> bool:
+    """Permite enviar se não mandou a mesma mensagem nos últimos 60 s."""
+    chave = f"{numero}|{hash(msg)}"
+    now = time.time()
+    # limpa itens expirados
+    for k, ts in list(_MSG_CACHE.items()):
+        if now - ts > _CACHE_TTL:
+            _MSG_CACHE.pop(k, None)
+    if chave in _MSG_CACHE:
+        return False
+    _MSG_CACHE[chave] = now
+    return True
+
+
+# ─────────────────────── Z-API / WHATSAPP ───────────────────────────
 async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool) -> None:
     numero = limpar_telefone(phone)
     if len(numero) != 11:
         print(f"⚠️ Telefone inválido: {numero}")
         return
 
-    if novo:
-        msg = (
-            f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
-            "Sou Marcello, seu ponto de contato para qualquer dúvida.\n"
-            f"Seu e-mail cadastrado é {email}. Prefere usar outro?"
-        )
-    else:
-        msg = (
+    msg = (
+        f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
+        "Sou Marcello, seu ponto de contato para qualquer dúvida.\n"
+        f"Seu e-mail cadastrado é {email}. Prefere usar outro?"
+        if novo
+        else (
             f"Olá {name}, obrigado por renovar conosco! "
             "Qualquer coisa é só chamar. Rumo à fluência! 🚀"
         )
+    )
+
+    if not _can_send(numero, msg):
+        print("ℹ️ WhatsApp já enviado recentemente – ignorado")
+        return
 
     payload = {"phone": numero, "message": msg}
     url = (
         f"https://api.z-api.io/instances/{settings.ZAPI_INSTANCE_ID}"
         f"/token/{settings.ZAPI_TOKEN}/send-text"
     )
-    headers = {
-        "Content-Type": "application/json",
-        "Client-Token": settings.ZAPI_SECURITY_TOKEN,
-    }
+    headers = {"Content-Type": "application/json", "Client-Token": settings.ZAPI_SECURITY_TOKEN}
+
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(url, headers=headers, json=payload)
         if r.status_code == 200:
@@ -202,15 +214,10 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool) -
 
 # ───────────────────────────── ASAAS ────────────────────────────────
 async def criar_assinatura_asaas(data: dict):
-    """
-    Cria assinatura mensal no Asaas se não existir uma ativa.
-    Campos obrigatórios em `data`:
-      nome, email, telefone, cpf, valor, vencimento, fim_pagamento
-    """
+    """Cria assinatura se não existir ativa."""
     headers = {"Content-Type": "application/json", "access-token": settings.ASAAS_API_KEY}
-
     async with httpx.AsyncClient(timeout=10) as client:
-        # 1) cliente
+        # cliente
         r = await client.get(
             f"{settings.ASAAS_BASE}/customers", headers=headers, params={"email": data["email"]}
         )
@@ -229,7 +236,7 @@ async def criar_assinatura_asaas(data: dict):
             r.raise_for_status()
             customer_id = r.json()["id"]
 
-        # 2) assinatura ativa?
+        # assinatura ativa?
         r = await client.get(
             f"{settings.ASAAS_BASE}/subscriptions",
             headers=headers,
@@ -240,7 +247,7 @@ async def criar_assinatura_asaas(data: dict):
             print("ℹ️ Assinatura já existe — nada a criar.")
             return r.json()["data"][0]
 
-        # 3) cria assinatura
+        # cria assinatura
         assinatura = {
             "customer": customer_id,
             "billingType": "UNDEFINED",
