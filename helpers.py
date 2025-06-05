@@ -149,7 +149,7 @@ async def upsert_student(data: dict) -> str:
             "Telefone": {"rich_text": [{"text": {"content": data["telefone"]}}]},
             "CPF": {"rich_text": [{"text": {"content": data["cpf"]}}]},
             "Plano": {"select": {"name": data["pacote"] or "—"}},
-            "Tempo de contrato": {"select": {"name": data.get("duracao") or "—"}},
+            "Tempo de contrato": {"status": {"name": data.get("duracao") or "—"}},
             "Inicio do contrato": {"date": {"start": data["inicio"]}},
             "Fim do contrato": {"date": {"start": data["fim"]}},
             "Endereço Completo": {
