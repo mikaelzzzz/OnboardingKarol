@@ -1,7 +1,8 @@
 # ~/Downloads/OnboardingKarol/main.py
-# Versão 2025-06-05 d — agora preenche Plano robusto, Tempo de contrato,
+# Versão 2025-06-06 — normaliza nomes de variáveis do ZapSign,
+# valida datas antes de chamar o Asaas e evita erro de “data de hoje”.
 
-
+import re                                       # ← NOVO
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
@@ -17,6 +18,7 @@ from helpers import (
 )
 
 app = FastAPI()
+
 
 # ─────────────────────────── HEALTHCHECK ────────────────────────────
 @app.get("/")
@@ -46,7 +48,6 @@ class WebhookPayload(BaseModel):
 # ─────────────────────────── WEBHOOK ────────────────────────────────
 @app.post("/webhook/zapsign", status_code=204)
 async def zapsign_webhook(payload: WebhookPayload):
-    # processa só quando o documento estiver assinado
     if payload.status != "signed":
         return
 
@@ -55,26 +56,46 @@ async def zapsign_webhook(payload: WebhookPayload):
     name = payload.signer_who_signed.name.strip()
     phone = f"{payload.signer_who_signed.phone_country}{payload.signer_who_signed.phone_number}"
 
-    # coloca respostas em dict minúsculo
+    # respostas → dict minúsculo
     respostas = {a.variable.lower(): a.value for a in payload.answers}
 
-    # ── PLANOS & DURAÇÃO (captura flexível) ─────────────────────────
+    # ── NORMALIZA ALIAS DAS VARIÁVEIS ───────────────────────────────
+    alias_regex = {
+        r"data\s+do\s+primeiro\s+pagamento": "data do primeiro pagamento",
+        r"data\s+último\s+pagamento":        "data último pagamento",
+    }
+    for pattern, canonical in alias_regex.items():
+        for key in list(respostas):
+            if re.fullmatch(pattern, key):
+                respostas[canonical] = respostas[key]
+
+    # ── captura plano e duração ─────────────────────────────────────
     pacote_raw = (
-        next((v for k, v in respostas.items() if "tipo do pacote" in k), "")  # campo normal
-        or next((v for v in respostas.values() if map_plano(v)), "")          # valor detectado
+        next((v for k, v in respostas.items() if "tipo do pacote" in k), "") or
+        next((v for v in respostas.values() if map_plano(v)), "")
     )
     duracao_raw = (
-        next((v for k, v in respostas.items() if "tempo de contrato" in k), "")
-        or next((v for v in respostas.values() if map_duracao(v)), "")
+        next((v for k, v in respostas.items() if "tempo de contrato" in k), "") or
+        next((v for v in respostas.values() if map_duracao(v)), "")
     )
 
-    # ── DATA DE NASCIMENTO ──────────────────────────────────────────
+    # ── datas ───────────────────────────────────────────────────────
+    venc_raw = respostas.get("data do primeiro pagamento", "")
+    fim_raw  = respostas.get("data último pagamento", "")
+    inicio   = formatar_data(venc_raw)
+    fim      = formatar_data(fim_raw)
+
+    if not inicio:
+        print(f"❌ Vencimento faltando ou inválido: '{venc_raw}'")
+    if not fim:
+        print(f"❌ Fim de pagamento faltando ou inválido: '{fim_raw}'")
+
     nascimento_raw = respostas.get("data de nascimento", "")
 
     # ── aluno já existe? ────────────────────────────────────────────
     is_novo = not (await notion_search_by_email(email))
 
-    # ── monta propriedades para Notion / Asaas ──────────────────────
+    # ── monta propriedades (Notion) ─────────────────────────────────
     props = {
         "name":       name,
         "email":      email,
@@ -82,8 +103,8 @@ async def zapsign_webhook(payload: WebhookPayload):
         "cpf":        respostas.get("cpf", ""),
         "pacote":     map_plano(pacote_raw),
         "duracao":    map_duracao(duracao_raw),
-        "inicio":     formatar_data(respostas.get("data do primeiro  pagamento", "")),
-        "fim":        formatar_data(respostas.get("data último pagamento", "")),
+        "inicio":     inicio,
+        "fim":        fim,
         "nascimento": formatar_data(nascimento_raw),
         "endereco":   respostas.get("endereço completo", ""),
     }
@@ -94,7 +115,7 @@ async def zapsign_webhook(payload: WebhookPayload):
     # ── Notion (upsert) ────────────────────────────────────────────
     await upsert_student(props)
 
-    # ── Asaas (cliente + assinatura idempotente) ───────────────────
+    # ── Asaas (cliente + assinatura) ───────────────────────────────
     await criar_assinatura_asaas(
         {
             "nome":          name,
@@ -102,7 +123,7 @@ async def zapsign_webhook(payload: WebhookPayload):
             "telefone":      phone,
             "cpf":           props["cpf"],
             "valor":         respostas.get("r$valor das parcelas", "0"),
-            "vencimento":    props["inicio"],
-            "fim_pagamento": props["fim"],
+            "vencimento":    inicio,   # já validado; pode estar ""
+            "fim_pagamento": fim,      # idem
         }
     )
