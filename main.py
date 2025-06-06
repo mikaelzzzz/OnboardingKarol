@@ -1,8 +1,7 @@
 # ~/Downloads/OnboardingKarol/main.py
-# Versão 2025-06-06 — normaliza nomes de variáveis do ZapSign,
-# valida datas antes de chamar o Asaas e evita erro de “data de hoje”.
+# Versão 2025-06-06 — revisada, envia datas brutas ao Asaas.
 
-import re                                       # ← NOVO
+import re
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
@@ -19,18 +18,15 @@ from helpers import (
 
 app = FastAPI()
 
-
 # ─────────────────────────── HEALTHCHECK ────────────────────────────
 @app.get("/")
 async def health():
     return {"status": "ok"}
 
-
 # ─────────────────────────── Pydantic Models ────────────────────────
 class Answer(BaseModel):
     variable: str
     value: str
-
 
 class Signer(BaseModel):
     name: str
@@ -38,12 +34,10 @@ class Signer(BaseModel):
     phone_country: str
     phone_number: str
 
-
 class WebhookPayload(BaseModel):
     status: str
     answers: List[Answer]
     signer_who_signed: Signer
-
 
 # ─────────────────────────── WEBHOOK ────────────────────────────────
 @app.post("/webhook/zapsign", status_code=204)
@@ -62,7 +56,7 @@ async def zapsign_webhook(payload: WebhookPayload):
     # ── NORMALIZA ALIAS DAS VARIÁVEIS ───────────────────────────────
     alias_regex = {
         r"data\s+do\s+primeiro\s+pagamento": "data do primeiro pagamento",
-        r"data\s+último\s+pagamento":        "data último pagamento",
+        r"data\s+(?:do\s+)?último\s+pagamento": "data último pagamento",   # ← melhoria
     }
     for pattern, canonical in alias_regex.items():
         for key in list(respostas):
@@ -123,7 +117,7 @@ async def zapsign_webhook(payload: WebhookPayload):
             "telefone":      phone,
             "cpf":           props["cpf"],
             "valor":         respostas.get("r$valor das parcelas", "0"),
-            "vencimento":    inicio,   # já validado; pode estar ""
-            "fim_pagamento": fim,      # idem
+            "vencimento":    venc_raw,   # ← envia BRUTO → helpers faz iso_or_brazil
+            "fim_pagamento": fim_raw,    # idem
         }
     )
