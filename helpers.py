@@ -1,6 +1,6 @@
 # ~/Downloads/OnboardingKarol/helpers.py
-# Versão 2025-06-05 d — agora também grava “Data de Nascimento”,
-# mantém upsert idêntico, datas ISO, WhatsApp sem duplicados, plano robusto.
+# Versão 2025-06-05 e — cache de WhatsApp por número (TTL 5 min),
+# grava Data de Nascimento, Plano robusto, upsert idêntico.
 
 import re
 import time
@@ -29,7 +29,6 @@ settings = Settings()
 
 # ──────────────────────── NORMALIZAÇÃO AUXILIAR ─────────────────────
 def _norm(text: str | None) -> str:
-    """minúsculas sem acento para buscas flexíveis."""
     if not text:
         return ""
     txt = unicodedata.normalize("NFD", text)
@@ -65,12 +64,10 @@ def map_duracao(raw: str | None) -> Optional[str]:
 
 # ───────────────────── FUNÇÕES DE FORMATAÇÃO ───────────────────────
 def limpar_telefone(numero: str) -> str:
-    """Remove não numéricos e devolve 11 últimos dígitos (DDD+cel)."""
     return re.sub(r"\D", "", numero)[-11:]
 
 
 def formatar_data(data: str | None) -> str:
-    """Converte 'dd/mm/YYYY' → 'YYYY-MM-DD'. Retorna '' se inválido/vazio."""
     try:
         return datetime.strptime((data or "").strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
     except ValueError:
@@ -102,7 +99,6 @@ async def notion_search_by_email(email: str) -> List[dict]:
 
 
 def _build_props(data: dict) -> dict:
-    """Gera propriedades comuns (criar ou atualizar)."""
     props = {
         "Student Name": {"title": [{"text": {"content": data["name"]}}]},
         "Telefone":     {"rich_text": [{"text": {"content": data["telefone"]}}]},
@@ -111,29 +107,24 @@ def _build_props(data: dict) -> dict:
         "Inicio do contrato": {"date": {"start": data["inicio"]}},
         "Fim do contrato":    {"date": {"start": data["fim"]}},
         "Endereço Completo":  {"rich_text": [{"text": {"content": data.get("endereco", "")}}]},
-        # Data de nascimento só se presente
         **(
             {"Data de Nascimento": {"date": {"start": data["nascimento"]}}}
             if data.get("nascimento")
             else {}
         ),
-        # Tempo de contrato (status) só se presente
         **(
             {"Tempo de contrato": {"status": {"name": data["duracao"]}}}
             if data.get("duracao")
             else {}
         ),
     }
-    return {k: v for k, v in props.items() if v}  # remove vazios/None
+    return {k: v for k, v in props.items() if v}
 
 
 async def notion_create_page(data: dict) -> None:
     payload = {
         "parent": {"database_id": settings.NOTION_DB_ID},
-        "properties": {
-            "Email": {"email": data["email"]},
-            **_build_props(data),
-        },
+        "properties": {"Email": {"email": data["email"]}, **_build_props(data)},
     }
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post("https://api.notion.com/v1/pages", headers=_headers_notion(), json=payload)
@@ -164,18 +155,17 @@ async def upsert_student(data: dict) -> str:
     return ""
 
 
-# ─────────── Anti-duplicação de WhatsApp (memória de 60 s) ───────────
+# ─────────── Anti-duplicação de WhatsApp (TTL 5 min por número) ─────
 _MSG_CACHE: Dict[str, float] = {}
-_CACHE_TTL = 60
+_CACHE_TTL = 300  # segundos
 
 
-def _can_send(numero: str, msg: str) -> bool:
-    chave = f"{numero}|{hash(msg)}"
+def _can_send(numero: str) -> bool:
     now = time.time()
     _MSG_CACHE.update({k: v for k, v in _MSG_CACHE.items() if now - v <= _CACHE_TTL})
-    if chave in _MSG_CACHE:
+    if numero in _MSG_CACHE:
         return False
-    _MSG_CACHE[chave] = now
+    _MSG_CACHE[numero] = now
     return True
 
 
@@ -197,15 +187,12 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool) -
         )
     )
 
-    if not _can_send(numero, msg):
+    if not _can_send(numero):
         print("ℹ️ WhatsApp já enviado recentemente – ignorado")
         return
 
     payload = {"phone": numero, "message": msg}
-    url = (
-        f"https://api.z-api.io/instances/{settings.ZAPI_INSTANCE_ID}"
-        f"/token/{settings.ZAPI_TOKEN}/send-text"
-    )
+    url = f"https://api.z-api.io/instances/{settings.ZAPI_INSTANCE_ID}/token/{settings.ZAPI_TOKEN}/send-text"
     headers = {"Content-Type": "application/json", "Client-Token": settings.ZAPI_SECURITY_TOKEN}
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -218,10 +205,8 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool) -
 
 # ───────────────────────────── ASAAS ────────────────────────────────
 async def criar_assinatura_asaas(data: dict):
-    """Cria assinatura se não existir ativa."""
     headers = {"Content-Type": "application/json", "access-token": settings.ASAAS_API_KEY}
     async with httpx.AsyncClient(timeout=10) as client:
-        # cliente
         r = await client.get(f"{settings.ASAAS_BASE}/customers", headers=headers, params={"email": data["email"]})
         r.raise_for_status()
         clientes = r.json().get("data", [])
@@ -238,7 +223,6 @@ async def criar_assinatura_asaas(data: dict):
             r.raise_for_status()
             customer_id = r.json()["id"]
 
-        # assinatura ativa?
         r = await client.get(
             f"{settings.ASAAS_BASE}/subscriptions",
             headers=headers,
