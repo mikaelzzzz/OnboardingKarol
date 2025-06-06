@@ -1,5 +1,5 @@
 # ~/Downloads/OnboardingKarol/helpers.py
-# Versão 2025-06-05 e — cache de WhatsApp por número (TTL 5 min),
+# Versão 2025-06-06 f — inclui iso_or_brazil() para corrigir nextDueDate/endDate
 
 import re
 import time
@@ -71,6 +71,19 @@ def formatar_data(data: str | None) -> str:
         return datetime.strptime((data or "").strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
     except ValueError:
         return ""
+
+
+def iso_or_brazil(date_str: str | None) -> str:     # ← NOVA função
+    """
+    Aceita 'YYYY-MM-DD' ou 'dd/mm/YYYY' e converte para ISO.
+    Retorna '' se inválido.
+    """
+    if not date_str:
+        return ""
+    txt = date_str.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", txt):
+        return txt
+    return formatar_data(txt)
 
 
 # ──────────────────────────── NOTION ────────────────────────────────
@@ -238,8 +251,8 @@ async def criar_assinatura_asaas(data: dict):
             "cycle": "MONTHLY",
             "value": float(data["valor"].replace("R$", "").replace(".", "").replace(",", ".").strip() or 0),
             "description": "Aulas de Inglês",
-            "nextDueDate": formatar_data(data.get("vencimento")),
-            "endDate": formatar_data(data.get("fim_pagamento")),
+            "nextDueDate": iso_or_brazil(data.get("vencimento")),   # ← Corrigido aqui
+            "endDate":     iso_or_brazil(data.get("fim_pagamento")),# ← Corrigido aqui
             "fine": {"value": 2, "type": "PERCENTAGE"},
             "interest": {"value": 1},
             "notificationDisabled": False,
