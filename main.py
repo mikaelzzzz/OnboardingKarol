@@ -1,6 +1,6 @@
 # ~/Downloads/OnboardingKarol/main.py
 # Versão 2025-06-05 d — agora preenche Plano robusto, Tempo de contrato,
-# Data de Nascimento, evita duplicidades e normaliza datas.
+
 
 from fastapi import FastAPI
 from pydantic import BaseModel
