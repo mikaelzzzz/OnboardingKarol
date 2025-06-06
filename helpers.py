@@ -1,6 +1,5 @@
 # ~/Downloads/OnboardingKarol/helpers.py
 # Versão 2025-06-05 e — cache de WhatsApp por número (TTL 5 min),
-# grava Data de Nascimento, Plano robusto, upsert idêntico.
 
 import re
 import time
