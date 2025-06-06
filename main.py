@@ -1,6 +1,6 @@
 # ~/Downloads/OnboardingKarol/main.py
 # Versão 2025-06-06 — normaliza nomes de variáveis do ZapSign,
-# valida datas antes de chamar o Asaas e evita erro de “data de hoje”
+# valida datas antes de chamar o Asaas e evita erro de “data de hoje”.
 
 import re                                       # ← NOVO
 from fastapi import FastAPI
