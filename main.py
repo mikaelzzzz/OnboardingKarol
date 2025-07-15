@@ -62,8 +62,8 @@ async def zapsign_webhook(payload: WebhookPayload):
             "pacote":    respostas.get(
                 "tipo do pacote, escrever “vip” ou “light” ou “flexge + conversação com nativos", ""
             ),
-            "inicio":    respostas.get("data do primeiro  pagamento", ""),
-            "fim":       respostas.get("data último pagamento", ""),
+            "inicio":    respostas.get("data inicio do contrato", ""),
+            "fim":       respostas.get("data do término do contrato", ""),
             "endereco":  respostas.get("endereço completo", ""),
         })
 
