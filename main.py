@@ -74,15 +74,21 @@ async def zapsign_webhook(payload: WebhookPayload):
     )
 
     # ── datas ───────────────────────────────────────────────────────
-    venc_raw = respostas.get("data do primeiro pagamento", "")
-    fim_raw  = respostas.get("data último pagamento", "")
-    inicio   = formatar_data(venc_raw)
-    fim      = formatar_data(fim_raw)
+    # Pagamento (para Asaas)
+    vencimento_pagamento_raw = respostas.get("data do primeiro pagamento", "")
+    fim_pagamento_raw = respostas.get("data último pagamento", "")
 
-    if not inicio:
-        print(f"❌ Vencimento faltando ou inválido: '{venc_raw}'")
-    if not fim:
-        print(f"❌ Fim de pagamento faltando ou inválido: '{fim_raw}'")
+    # Contrato (para Notion), com fallback para data de pagamento
+    inicio_contrato_raw = respostas.get("data inicio do contrato", vencimento_pagamento_raw)
+    fim_contrato_raw = respostas.get("data do término do contrato", fim_pagamento_raw)
+
+    inicio_contrato = formatar_data(inicio_contrato_raw)
+    fim_contrato = formatar_data(fim_contrato_raw)
+
+    if not inicio_contrato:
+        print(f"❌ Início de contrato (Notion) faltando ou inválido: '{inicio_contrato_raw}'")
+    if not fim_contrato:
+        print(f"❌ Fim de contrato (Notion) faltando ou inválido: '{fim_contrato_raw}'")
 
     nascimento_raw = respostas.get("data de nascimento", "")
 
@@ -97,8 +103,8 @@ async def zapsign_webhook(payload: WebhookPayload):
         "cpf":        respostas.get("cpf", ""),
         "pacote":     map_plano(pacote_raw),
         "duracao":    map_duracao(duracao_raw),
-        "inicio":     inicio,
-        "fim":        fim,
+        "inicio":     inicio_contrato,
+        "fim":        fim_contrato,
         "nascimento": formatar_data(nascimento_raw),
         "endereco":   respostas.get("endereço completo", ""),
     }
@@ -117,7 +123,7 @@ async def zapsign_webhook(payload: WebhookPayload):
             "telefone":      phone,
             "cpf":           props["cpf"],
             "valor":         respostas.get("r$valor das parcelas", "0"),
-            "vencimento":    venc_raw,   # ← envia BRUTO → helpers faz iso_or_brazil
-            "fim_pagamento": fim_raw,    # idem
+            "vencimento":    vencimento_pagamento_raw,
+            "fim_pagamento": fim_pagamento_raw,
         }
     )
