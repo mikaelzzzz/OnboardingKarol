@@ -57,6 +57,7 @@ async def zapsign_webhook(payload: WebhookPayload):
     alias_regex = {
         r"data\s+do\s+primeiro\s+pagamento": "data do primeiro pagamento",
         r"data\s+(?:do\s+)?último\s+pagamento": "data último pagamento",   # ← melhoria
+        r"r\$valor das parcelas": "r$valor da parcela",
     }
     for pattern, canonical in alias_regex.items():
         for key in list(respostas):
@@ -122,7 +123,7 @@ async def zapsign_webhook(payload: WebhookPayload):
             "email":         email,
             "telefone":      phone,
             "cpf":           props["cpf"],
-            "valor":         respostas.get("r$valor das parcelas", "0"),
+            "valor":         respostas.get("r$valor da parcela", "0"),
             "vencimento":    vencimento_pagamento_raw,
             "fim_pagamento": fim_pagamento_raw,
         }

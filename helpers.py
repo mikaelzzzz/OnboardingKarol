@@ -189,23 +189,13 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool) -
         return
 
     msg = (
-        (
-            f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
-            "Sou Marcello, seu ponto de contato para qualquer dúvida.\n"
-            f"Seu e-mail cadastrado é {email}. Prefere usar outro?\n\n"
-            "Duas coisas que vou precisar de você...\n\n"
-            "1️⃣ Primeiro: Preciso que faça o teste de nivelamento clicando no link abaixo:\n"
-            "https://student.flexge.com/v2/placement/karollinyeloica\n"
-            "As instruções estão todas no próprio link.\n\n"
-            "2️⃣ Segundo: Preciso de duas fotos suas — uma foto de perfil (somente o rosto) "
-            "e uma foto inspiração. Essa foto inspiração pode ser algo que represente "
-            "o motivo de você querer aprender inglês."
-        )
-        if novo
-        else (
-            f"Olá {name}, obrigado por renovar conosco! "
-            "Qualquer coisa é só chamar. Rumo à fluência! 🚀"
-        )
+        f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
+        "Sou Marcelo, seu ponto de contato para qualquer dúvida.\n"
+        f"Seu e-mail cadastrado é {email}. Prefere usar outro?\n\n"
+        "Uma coisa que vou precisar de você...\n\n"
+        "1️⃣ Segundo: Preciso de duas fotos suas — uma foto de perfil (somente o rosto) "
+        "e uma foto inspiração. Essa foto inspiração pode ser algo que represente "
+        "o motivo de você querer aprender inglês. Vamos usar essa foto no seu espaço do aluno em nosso app."
     )
 
     if not _can_send(numero):
