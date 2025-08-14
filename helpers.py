@@ -192,10 +192,10 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool) -
         f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
         "Sou Marcelo, seu ponto de contato para qualquer dúvida.\n"
         f"Seu e-mail cadastrado é {email}. Prefere usar outro?\n\n"
-        "Uma coisa que vou precisar de você...\n\n"
-        "1️⃣ Segundo: Preciso de duas fotos suas — uma foto de perfil (somente o rosto) "
+        "Vou precisar de duas fotos suas...\n\n"
+        "Uma foto de perfil (somente o rosto) "
         "e uma foto inspiração. Essa foto inspiração pode ser algo que represente "
-        "o motivo de você querer aprender inglês. Vamos usar essa foto no seu espaço do aluno em nosso app."
+        "o motivo de você querer aprender inglês. Vamos usar essa foto no seu espaço do aluno em nosso aplicativo."
     )
 
     if not _can_send(numero):
