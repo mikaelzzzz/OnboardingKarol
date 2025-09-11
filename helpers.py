@@ -14,6 +14,8 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     NOTION_TOKEN: str
     NOTION_DB_ID: str
+    NOTION_DATA_SOURCE_ID: str | None = ""
+    NOTION_API_VERSION: str = "2025-09-03"
     ZAPI_INSTANCE_ID: str
     ZAPI_TOKEN: str
     ZAPI_SECURITY_TOKEN: str | None = ""
@@ -90,9 +92,38 @@ def iso_or_brazil(date_str: str | None) -> str:     # ← NOVA função
 def _headers_notion() -> dict:
     return {
         "Authorization": f"Bearer {settings.NOTION_TOKEN}",
-        "Notion-Version": "2022-06-28",
+        "Notion-Version": settings.NOTION_API_VERSION,
         "Content-Type": "application/json",
     }
+
+
+_CACHED_DATA_SOURCE_ID: str | None = None
+
+
+async def _get_data_source_id() -> str | None:
+    global _CACHED_DATA_SOURCE_ID
+    if settings.NOTION_DATA_SOURCE_ID:
+        _CACHED_DATA_SOURCE_ID = settings.NOTION_DATA_SOURCE_ID
+        return _CACHED_DATA_SOURCE_ID or None
+
+    if _CACHED_DATA_SOURCE_ID:
+        return _CACHED_DATA_SOURCE_ID
+
+    # Descobre data_source_id via GET /v1/databases/{db}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID}",
+                headers=_headers_notion(),
+            )
+            r.raise_for_status()
+            data_sources = (r.json() or {}).get("data_sources", [])
+            if data_sources:
+                _CACHED_DATA_SOURCE_ID = data_sources[0].get("id")
+                return _CACHED_DATA_SOURCE_ID
+    except Exception as e:
+        print("⚠️ Notion data_source discovery failed:", e)
+    return None
 
 
 async def notion_search_by_email(email: str) -> List[dict]:
@@ -100,12 +131,21 @@ async def notion_search_by_email(email: str) -> List[dict]:
         "filter": {"property": "Email", "email": {"equals": email.strip().lower()}},
         "page_size": 1,
     }
+    data_source_id = await _get_data_source_id()
     async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(
-            f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID}/query",
-            headers=_headers_notion(),
-            json=payload,
-        )
+        if data_source_id:
+            r = await client.post(
+                f"https://api.notion.com/v1/data_sources/{data_source_id}/query",
+                headers=_headers_notion(),
+                json=payload,
+            )
+        else:
+            # Fallback legacy (single-source dbs may still work)
+            r = await client.post(
+                f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID}/query",
+                headers=_headers_notion(),
+                json=payload,
+            )
         r.raise_for_status()
         return r.json().get("results", [])
 
@@ -134,8 +174,15 @@ def _build_props(data: dict) -> dict:
 
 
 async def notion_create_page(data: dict) -> None:
+    data_source_id = await _get_data_source_id()
+    parent: dict
+    if data_source_id:
+        parent = {"data_source_id": data_source_id}
+    else:
+        parent = {"database_id": settings.NOTION_DB_ID}
+
     payload = {
-        "parent": {"database_id": settings.NOTION_DB_ID},
+        "parent": parent,
         "properties": {"Email": {"email": data["email"]}, **_build_props(data)},
     }
     async with httpx.AsyncClient(timeout=10) as client:
@@ -182,21 +229,38 @@ def _can_send(numero: str) -> bool:
 
 
 # ─────────────────────── Z-API / WHATSAPP ───────────────────────────
-async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool) -> None:
+async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool, fim_contrato_text: str | None = None) -> None:
     numero = limpar_telefone(phone)
     if len(numero) != 11:
         print(f"⚠️ Telefone inválido: {numero}")
         return
 
-    msg = (
-        f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
-        "Sou Marcelo, seu ponto de contato para qualquer dúvida.\n"
-        f"Seu e-mail cadastrado é {email}. Prefere usar outro?\n\n"
-        "Vou precisar de duas fotos suas...\n\n"
-        "Uma foto de perfil (somente o rosto) "
-        "e uma foto inspiração. Essa foto inspiração pode ser algo que represente "
-        "o motivo de você querer aprender inglês. Vamos usar essa foto no seu espaço do aluno em nosso aplicativo."
-    )
+    first_name = (name or "").strip().split(" ")[0] if name else ""
+
+    if novo:
+        msg = (
+            f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
+            "Sou Marcelo, seu ponto de contato para qualquer dúvida.\n"
+            f"Seu e-mail cadastrado é {email}. Prefere usar outro?\n\n"
+            "Vou precisar de duas fotos suas...\n\n"
+            "Uma foto de perfil (somente o rosto) "
+            "e uma foto inspiração. Essa foto inspiração pode ser algo que represente "
+            "o motivo de você querer aprender inglês. Vamos usar essa foto no seu espaço do aluno em nosso aplicativo."
+        )
+    else:
+        corpo_base = (
+            f"Hey, {first_name}. Parabéns pela excelente decisão de renovar seu contrato rumo a meta de atingir a fluência. "
+            "Lembre-se que apenas 3% da população brasileira falam Inglês fluente e você está mostrando que é capaz de entrar para essa estatistica. "
+            "Conte com a gente nesse trajetória."
+        )
+        if (fim_contrato_text or "").strip():
+            msg = (
+                f"{corpo_base} "
+                f"Seu novo contrato se encerra no dia: {fim_contrato_text.strip()}. "
+                "See you!"
+            )
+        else:
+            msg = corpo_base + " See you!"
 
     if not _can_send(numero):
         print("ℹ️ WhatsApp já enviado recentemente – ignorado")

@@ -111,7 +111,9 @@ async def zapsign_webhook(payload: WebhookPayload):
     }
 
     # ── WhatsApp ────────────────────────────────────────────────────
-    await send_whatsapp_message(name, email, phone, novo=is_novo)
+    # Para renovações, enviar mensagem específica com o fim do contrato vindo do Zapsign
+    fim_contrato_text = fim_contrato_raw
+    await send_whatsapp_message(name, email, phone, novo=is_novo, fim_contrato_text=fim_contrato_text)
 
     # ── Notion (upsert) ────────────────────────────────────────────
     await upsert_student(props)
