@@ -234,6 +234,10 @@ def obter_dados_alunos():
     start_date, end_date = get_last_week_dates()
     total_students_data = []
 
+    print(f"🔍 Buscando alunos de {start_date.strftime('%Y-%m-%d %H:%M:%S')} até {end_date.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🔑 API Key Flexge: {'✅ Configurada' if api_key_flexge else '❌ Não configurada'}")
+    print(f"🌐 URL Flexge: {url_flexge}")
+
     while True:
         params = {
             'page': page,
@@ -241,21 +245,40 @@ def obter_dados_alunos():
             'studiedTimeRange[from]': start_date.strftime('%Y-%m-%dT%H:%M:%SZ'),
             'studiedTimeRange[to]': end_date.strftime('%Y-%m-%dT%H:%M:%SZ'),
         }
+        
+        print(f"📄 Página {page} - Parâmetros: {params}")
         response = requests.get(url_flexge, headers=headers_flexge, params=params)
+        print(f"📡 Status da resposta: {response.status_code}")
+        
         if response.status_code == 200:
             data = response.json()
             students = data.get('docs', [])
+            total_docs = data.get('totalDocs', 0)
+            
+            print(f"📊 Total de docs na resposta: {total_docs}")
+            print(f"👥 Alunos nesta página: {len(students)}")
+            
             if students:
                 for aluno in students:
                     nome = aluno.get('name')
                     total_time_seconds = calcular_tempo_total(aluno)
+                    print(f"👤 {nome}: {format_time(total_time_seconds)} ({total_time_seconds}s)")
+                    
                     if total_time_seconds >= 3600:
                         total_students_data.append((nome, total_time_seconds))
+                        print(f"✅ Adicionado: {nome} - {format_time(total_time_seconds)}")
+                    else:
+                        print(f"⏰ Tempo insuficiente: {nome} - {format_time(total_time_seconds)}")
                 page += 1
             else:
+                print("📭 Nenhum aluno nesta página - parando busca")
                 break
         else:
+            print(f"❌ Erro na API Flexge: {response.status_code}")
+            print(f"📝 Resposta: {response.text}")
             break
+    
+    print(f"🎯 Total de alunos encontrados com +1h: {len(total_students_data)}")
     return total_students_data
 
 def check_student_exists(notion_data, name):
@@ -599,3 +622,17 @@ async def lista_flexge_semanal(request: WhatsAppRequest):
         return {"notion": "Tabela semanal atualizada.", "whatsapp": result}
     else:
         raise HTTPException(status_code=404, detail="Nenhum aluno com mais de 1 hora de estudo.")
+
+@app.get("/teste-flexge/")
+async def teste_flexge():
+    """Rota de teste para debugar a API do Flexge"""
+    start_date, end_date = get_last_week_dates()
+    alunos = obter_dados_alunos()
+    
+    return {
+        "periodo": f"{start_date.strftime('%Y-%m-%d %H:%M:%S')} até {end_date.strftime('%Y-%m-%d %H:%M:%S')}",
+        "total_alunos": len(alunos),
+        "alunos": [(nome, format_time(tempo)) for nome, tempo in alunos[:10]],  # Primeiros 10
+        "api_key_configurada": bool(api_key_flexge),
+        "url_flexge": url_flexge
+    }
