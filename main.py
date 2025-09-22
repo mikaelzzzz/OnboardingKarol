@@ -3,11 +3,16 @@
 
 import re
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Any, Dict, Union
 import httpx
+import requests
+from dotenv import load_dotenv
+
+# Carrega variáveis de ambiente do .env
+load_dotenv()
 
 from helpers import (
     send_whatsapp_message,
@@ -41,6 +46,9 @@ class WebhookPayload(BaseModel):
     status: str
     answers: List[Answer]
     signer_who_signed: Signer
+
+class WhatsAppRequest(BaseModel):
+    phone_number: str
 
 # ─────────────────────────── WEBHOOK ────────────────────────────────
 @app.post("/webhook/zapsign", status_code=204)
@@ -133,6 +141,142 @@ async def zapsign_webhook(payload: WebhookPayload):
             "fim_pagamento": fim_pagamento_raw,
         }
     )
+
+# ───────────────────── CONFIGURAÇÃO FLEXGE ─────────────────────
+# Configuração da API Flexge
+api_key_flexge = os.getenv('FLEXGE_API_KEY')
+url_flexge = 'https://partner-api.flexge.com/external/students'
+
+# Headers Flexge
+headers_flexge = {
+    'accept': 'application/json',
+    'x-api-key': api_key_flexge
+}
+
+# ───────────────────── FUNÇÕES FLEXGE ─────────────────────
+def get_last_week_dates():
+    """Pega o intervalo da semana anterior (segunda 00:01 até domingo 23:59)"""
+    today = datetime.now(timezone.utc)
+    last_monday = (today - timedelta(days=today.weekday() + 7)).replace(
+        hour=0, minute=1, second=0, microsecond=0
+    )
+    next_sunday = (last_monday + timedelta(days=6)).replace(
+        hour=23, minute=59, second=59, microsecond=0
+    )
+    return last_monday, next_sunday
+
+def format_time(seconds):
+    """Converte segundos em horas e minutos"""
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    return f"{int(hours)}h {int(minutes)}m"
+
+def calcular_tempo_total(aluno):
+    """Calcula o tempo total de estudo do aluno"""
+    total_studied_time = aluno.get('weekTime', {}).get('studiedTime', 0)
+    for execution in aluno.get('executions', []):
+        total_studied_time += execution.get('studiedTime', 0)
+    return total_studied_time
+
+def obter_dados_alunos():
+    """Busca dados dos alunos no intervalo da semana passada"""
+    page = 1
+    start_date, end_date = get_last_week_dates()
+    total_students_data = []
+
+    while True:
+        params = {
+            'page': page,
+            'isPlacementTestOnly': 'false',
+            'studiedTimeRange[from]': start_date.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'studiedTimeRange[to]': end_date.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        }
+        response = requests.get(url_flexge, headers=headers_flexge, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            students = data.get('docs', [])
+            if students:
+                for aluno in students:
+                    nome = aluno.get('name')
+                    total_time_seconds = calcular_tempo_total(aluno)
+                    if total_time_seconds >= 3600:
+                        total_students_data.append((nome, total_time_seconds))
+                page += 1
+            else:
+                break
+        else:
+            break
+    return total_students_data
+
+def check_student_exists(notion_data, name):
+    """Verifica se o aluno já está no Notion"""
+    for result in notion_data:
+        if result["properties"]["Nome"]["title"][0]["text"]["content"] == name:
+            return result["id"]
+    return None
+
+def atualizar_ou_criar_notion(alunos):
+    """Atualiza ou cria registros no Notion"""
+    from helpers import settings, _headers_notion
+    
+    notion_search_url = f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID}/query"
+    notion_url = 'https://api.notion.com/v1/pages'
+    
+    response = requests.post(notion_search_url, headers=_headers_notion())
+    notion_data = response.json().get("results", [])
+
+    for nome, tempo in alunos:
+        page_id = check_student_exists(notion_data, nome)
+        formatted_time = format_time(tempo)
+
+        if page_id:
+            update_url = f"https://api.notion.com/v1/pages/{page_id}"
+            data = {
+                "properties": {
+                    "Horas de Estudo": {"rich_text": [{"text": {"content": formatted_time}}]}
+                }
+            }
+            response = requests.patch(update_url, headers=_headers_notion(), json=data)
+        else:
+            data = {
+                "parent": {"database_id": settings.NOTION_DB_ID},
+                "properties": {
+                    "Nome": {"title": [{"text": {"content": nome}}]},
+                    "Horas de Estudo": {"rich_text": [{"text": {"content": formatted_time}}]},
+                }
+            }
+            response = requests.post(notion_url, headers=_headers_notion(), json=data)
+
+def enviar_mensagem_whatsapp(alunos, start_date, end_date, phone_number):
+    """Envia a mensagem no WhatsApp com a lista de alunos"""
+    from helpers import settings
+    
+    if not alunos:
+        return {"status": "Nenhum aluno encontrado para enviar."}
+
+    alunos_ordenados = sorted(alunos, key=lambda x: x[1], reverse=True)
+    periodo_formatado = f"{start_date.strftime('%d/%m/%Y')} até {end_date.strftime('%d/%m/%Y')}"
+    mensagem = (
+        f"📚 Lista de Alunos que estudaram mais de 1 hora no Flexge "
+        f"(Semana de {periodo_formatado}):\n\n"
+    )
+    for i, (nome, tempo) in enumerate(alunos_ordenados, start=1):
+        mensagem += f"{i}. {nome} - {format_time(tempo)}\n"
+
+    payload = {
+        "phone": phone_number,
+        "message": mensagem
+    }
+    headers_zapi = {
+        "Content-Type": "application/json",
+        "Client-Token": settings.ZAPI_SECURITY_TOKEN
+    }
+    zapi_url = f"https://api.z-api.io/instances/{settings.ZAPI_INSTANCE_ID}/token/{settings.ZAPI_TOKEN}/send-text"
+    response = requests.post(zapi_url, headers=headers_zapi, json=payload)
+    if response.status_code == 200:
+        return {"status": "Mensagem enviada com sucesso via WhatsApp!", "response": response.json()}
+    else:
+        return {"status": "Erro ao enviar mensagem", "details": response.text}
 
 # ───────────────────── ROTAS: CÁLCULO/ATUALIZAÇÃO NO NOTION ─────────────────────
 
@@ -393,3 +537,15 @@ async def executar_calculo():
         except Exception as e:
             print(f"Erro ao processar contrato {page_id}: {e}")
     return {"status": "ok", "message": "Contratos processados com sucesso"}
+
+# ───────────────────── ROTA FLEXGE SEMANAL ─────────────────────
+@app.post("/lista-flexge-semanal/")
+async def lista_flexge_semanal(request: WhatsAppRequest):
+    start_date, end_date = get_last_week_dates()
+    alunos = obter_dados_alunos()
+    if alunos:
+        atualizar_ou_criar_notion(alunos)
+        result = enviar_mensagem_whatsapp(alunos, start_date, end_date, request.phone_number)
+        return {"notion": "Tabela semanal atualizada.", "whatsapp": result}
+    else:
+        raise HTTPException(status_code=404, detail="Nenhum aluno com mais de 1 hora de estudo.")
