@@ -282,11 +282,16 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool, f
 async def criar_assinatura_asaas(data: dict):
     headers = {"Content-Type": "application/json", "access-token": settings.ASAAS_API_KEY}
     async with httpx.AsyncClient(timeout=10) as client:
+        print(f"🔍 Buscando cliente no Asaas: {data['email']}")
         r = await client.get(f"{settings.ASAAS_BASE}/customers", headers=headers, params={"email": data["email"]})
+        print(f"📡 Status busca cliente: {r.status_code}")
+        if r.status_code != 200:
+            print(f"❌ Erro ao buscar cliente: {r.text}")
         r.raise_for_status()
         clientes = r.json().get("data", [])
         if clientes:
             customer_id = clientes[0]["id"]
+            print(f"✅ Cliente encontrado: {customer_id}")
         else:
             payload = {
                 "name": data["nome"],
@@ -294,9 +299,14 @@ async def criar_assinatura_asaas(data: dict):
                 "mobilePhone": limpar_telefone(data["telefone"]),
                 "cpfCnpj": re.sub(r"\D", "", data["cpf"]),
             }
+            print(f"👤 Criando cliente: {payload}")
             r = await client.post(f"{settings.ASAAS_BASE}/customers", headers=headers, json=payload)
+            print(f"📡 Status criação cliente: {r.status_code}")
+            if r.status_code != 200:
+                print(f"❌ Erro ao criar cliente: {r.text}")
             r.raise_for_status()
             customer_id = r.json()["id"]
+            print(f"✅ Cliente criado: {customer_id}")
 
         r = await client.get(
             f"{settings.ASAAS_BASE}/subscriptions",
