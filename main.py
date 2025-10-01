@@ -101,6 +101,11 @@ class WhatsAppRequest(BaseModel):
     phone_number: str
 
 # ─────────────────────────── WEBHOOK ────────────────────────────────
+@app.get("/webhook/zapsign")
+async def zapsign_webhook_health():
+    """Endpoint para o Zapsign verificar se o webhook está funcionando"""
+    return {"status": "ok", "message": "Webhook Zapsign está funcionando"}
+
 @app.post("/webhook/zapsign", status_code=204)
 async def zapsign_webhook(payload: WebhookPayload):
     if payload.status != "signed":
