@@ -1,0 +1,87 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: onboarding-karol-prod
+  REGION: southamerica-east1
+  SERVICE_NAME: onboarding-karol
+  REPOSITORY: onboarding-karol
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+                       -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:latest \
+                       .
+
+      - name: Push Docker image to Artifact Registry
+        run: |
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:latest
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+            --platform=managed \
+            --region=${{ env.REGION }} \
+            --allow-unauthenticated \
+            --min-instances=0 \
+            --max-instances=10 \
+            --memory=512Mi \
+            --cpu=1 \
+            --set-secrets=NOTION_TOKEN=NOTION_TOKEN:latest,\
+NOTION_DB_ID=NOTION_DB_ID:latest,\
+NOTION_DATA_SOURCE_ID=NOTION_DATA_SOURCE_ID:latest,\
+NOTION_API_VERSION=NOTION_API_VERSION:latest,\
+ZAPI_INSTANCE_ID=ZAPI_INSTANCE_ID:latest,\
+ZAPI_TOKEN=ZAPI_TOKEN:latest,\
+ZAPI_SECURITY_TOKEN=ZAPI_SECURITY_TOKEN:latest,\
+ASAAS_API_KEY=ASAAS_API_KEY:latest,\
+ASAAS_BASE=ASAAS_BASE:latest,\
+CALC_DATABASE_ID=CALC_DATABASE_ID:latest,\
+FLEXGE_API_KEY=FLEXGE_API_KEY:latest,\
+WHATSAPP_AUTO_NUMBER=WHATSAPP_AUTO_NUMBER:latest
+
+      - name: Get Service URL
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --platform=managed \
+            --region=${{ env.REGION }} \
+            --format='value(status.url)')
+          echo "Service deployed to: $SERVICE_URL"
+          echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_OUTPUT
+        id: get-url
+
+      - name: Show deployment summary
+        run: |
+          echo "::notice::Deployment successful! Service URL: ${{ steps.get-url.outputs.SERVICE_URL }}"
+
