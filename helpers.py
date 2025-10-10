@@ -239,7 +239,7 @@ async def send_whatsapp_message(name: str, email: str, phone: str, novo: bool, f
 
     if novo:
         msg = (
-            f"Welcome {name}! 🎉 Parabéns pela excelente decisão!\n\n"
+            f"Welcome {first_name}! 🎉 Parabéns pela excelente decisão!\n\n"
             "Sou Marcelo, seu ponto de contato para qualquer dúvida.\n"
             f"Seu e-mail cadastrado é {email}. Prefere usar outro?\n\n"
             "Vou precisar de duas fotos suas...\n\n"
