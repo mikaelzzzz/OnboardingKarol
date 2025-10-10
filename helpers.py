@@ -103,7 +103,7 @@ _CACHED_DATA_SOURCE_ID: str | None = None
 async def _get_data_source_id() -> str | None:
     global _CACHED_DATA_SOURCE_ID
     if settings.NOTION_DATA_SOURCE_ID:
-        _CACHED_DATA_SOURCE_ID = settings.NOTION_DATA_SOURCE_ID
+        _CACHED_DATA_SOURCE_ID = settings.NOTION_DATA_SOURCE_ID.strip()
         return _CACHED_DATA_SOURCE_ID or None
 
     if _CACHED_DATA_SOURCE_ID:
@@ -113,7 +113,7 @@ async def _get_data_source_id() -> str | None:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
-                f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID}",
+                f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID.strip()}",
                 headers=_headers_notion(),
             )
             r.raise_for_status()
@@ -135,14 +135,14 @@ async def notion_search_by_email(email: str) -> List[dict]:
     async with httpx.AsyncClient(timeout=10) as client:
         if data_source_id:
             r = await client.post(
-                f"https://api.notion.com/v1/data_sources/{data_source_id}/query",
+                f"https://api.notion.com/v1/data_sources/{data_source_id.strip()}/query",
                 headers=_headers_notion(),
                 json=payload,
             )
         else:
             # Fallback legacy (single-source dbs may still work)
             r = await client.post(
-                f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID}/query",
+                f"https://api.notion.com/v1/databases/{settings.NOTION_DB_ID.strip()}/query",
                 headers=_headers_notion(),
                 json=payload,
             )
@@ -177,9 +177,9 @@ async def notion_create_page(data: dict) -> None:
     data_source_id = await _get_data_source_id()
     parent: dict
     if data_source_id:
-        parent = {"data_source_id": data_source_id}
+        parent = {"data_source_id": data_source_id.strip()}
     else:
-        parent = {"database_id": settings.NOTION_DB_ID}
+        parent = {"database_id": settings.NOTION_DB_ID.strip()}
 
     payload = {
         "parent": parent,
