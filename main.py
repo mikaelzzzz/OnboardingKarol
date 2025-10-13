@@ -10,9 +10,10 @@ from typing import List, Any, Dict, Union
 import httpx
 import requests
 from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-import pytz
+# APScheduler removido - usando Cloud Scheduler externo
+# from apscheduler.schedulers.asyncio import AsyncIOScheduler
+# from apscheduler.triggers.cron import CronTrigger
+# import pytz
 
 # Carrega variáveis de ambiente do .env
 load_dotenv()
@@ -29,57 +30,20 @@ from helpers import (
 
 app = FastAPI()
 
-# ───────────────────── CONFIGURAÇÃO DO SCHEDULER ─────────────────────
-scheduler = AsyncIOScheduler(timezone=pytz.timezone('America/Sao_Paulo'))
-
-# Variável para armazenar o número do WhatsApp para envio automático
-WHATSAPP_AUTO_NUMBER = os.getenv('WHATSAPP_AUTO_NUMBER', '')
+# ───────────────────── NOTA: SCHEDULER AGORA É EXTERNO ─────────────────────
+# APScheduler interno foi removido. Agora usamos Cloud Scheduler (Google Cloud)
+# Para configurar: execute ./setup-cloud-scheduler.sh
+# Cloud Scheduler chama POST /lista-flexge-semanal/ toda segunda às 08:00
 
 # ─────────────────────────── HEALTHCHECK ────────────────────────────
 @app.get("/")
 async def health():
     return {"status": "ok"}
 
-# ───────────────────── FUNÇÃO AGENDADA ─────────────────────
-async def job_flexge_semanal():
-    """Função que será executada toda segunda-feira às 08:00"""
-    if not WHATSAPP_AUTO_NUMBER:
-        print("⚠️ WHATSAPP_AUTO_NUMBER não configurado - pulando execução automática")
-        return
-    
-    try:
-        start_date, end_date = get_last_week_dates()
-        alunos = obter_dados_alunos()
-        
-        if alunos:
-            atualizar_ou_criar_notion(alunos)
-            result = enviar_mensagem_whatsapp(alunos, start_date, end_date, WHATSAPP_AUTO_NUMBER)
-            print(f"✅ Job Flexge executado com sucesso: {result}")
-        else:
-            print("ℹ️ Nenhum aluno com mais de 1 hora de estudo encontrado")
-    except Exception as e:
-        print(f"❌ Erro no job Flexge: {e}")
-
-# ───────────────────── INICIALIZAÇÃO DO SCHEDULER ─────────────────────
-@app.on_event("startup")
-async def startup_event():
-    """Inicia o scheduler quando a aplicação sobe"""
-    # Agenda para toda segunda-feira às 08:00 (horário de São Paulo)
-    scheduler.add_job(
-        job_flexge_semanal,
-        trigger=CronTrigger(day_of_week=0, hour=8, minute=0),  # 0 = segunda-feira
-        id="flexge_semanal",
-        name="Lista Flexge Semanal",
-        replace_existing=True
-    )
-    scheduler.start()
-    print("🕐 Scheduler iniciado - Lista Flexge agendada para segunda-feira às 08:00")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Para o scheduler quando a aplicação desce"""
-    scheduler.shutdown()
-    print("🛑 Scheduler parado")
+# ───────────────────── SCHEDULER REMOVIDO ─────────────────────
+# APScheduler interno foi substituído por Cloud Scheduler (Google Cloud)
+# O Cloud Scheduler chama POST /lista-flexge-semanal/ automaticamente
+# Para configurar, execute: ./setup-cloud-scheduler.sh
 
 # ─────────────────────────── Pydantic Models ────────────────────────
 class Answer(BaseModel):

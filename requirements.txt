@@ -3,7 +3,5 @@ uvicorn
 httpx
 pydantic
 pydantic-settings
-apscheduler
 requests
 python-dotenv
-pytz
