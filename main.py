@@ -253,8 +253,16 @@ def obter_dados_alunos():
 def check_student_exists(notion_data, name):
     """Verifica se o aluno já está no Notion"""
     for result in notion_data:
-        if result["properties"]["Nome"]["title"][0]["text"]["content"] == name:
-            return result["id"]
+        try:
+            # Tenta acessar a propriedade Nome (pode ter nome diferente em databases diferentes)
+            props = result.get("properties", {})
+            nome_prop = props.get("Nome") or props.get("Student Name") or props.get("Name")
+            if nome_prop and nome_prop.get("title"):
+                current_name = nome_prop["title"][0]["text"]["content"]
+                if current_name == name:
+                    return result["id"]
+        except (KeyError, IndexError, TypeError):
+            continue
     return None
 
 def atualizar_ou_criar_notion(alunos):
@@ -586,9 +594,10 @@ async def lista_flexge_semanal(request: WhatsAppRequest):
     start_date, end_date = get_last_week_dates()
     alunos = obter_dados_alunos()
     if alunos:
-        atualizar_ou_criar_notion(alunos)
+        # Notion update desabilitado - use database separado se necessário
+        # atualizar_ou_criar_notion(alunos)
         result = enviar_mensagem_whatsapp(alunos, start_date, end_date, request.phone_number)
-        return {"notion": "Tabela semanal atualizada.", "whatsapp": result}
+        return {"whatsapp": result, "total_alunos": len(alunos)}
     else:
         raise HTTPException(status_code=404, detail="Nenhum aluno com mais de 1 hora de estudo.")
 
